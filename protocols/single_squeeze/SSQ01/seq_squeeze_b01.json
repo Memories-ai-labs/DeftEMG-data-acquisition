@@ -1,0 +1,172 @@
+{
+  "name": "seq_squeeze_b01",
+  "task": "scroll_prompter",
+  "task_set": "squeeze",
+  "params": {
+    "task_set": "squeeze",
+    "reps": 3,
+    "chord_sizes": [
+      2
+    ],
+    "chord_force": "same",
+    "hold_s": [
+      0.5,
+      2.0
+    ],
+    "gap_s": [
+      0.8,
+      1.5
+    ],
+    "lead_in_s": 6.5,
+    "per_block": 12,
+    "seed": 537888520,
+    "instructions": "Squeeze: close the thumb and the prompted fingers together while their capsules are on the target, gently for narrow capsules and firmly for wide ones. Relax the hand fully between presses.",
+    "block": 1
+  },
+  "prompts": [
+    {
+      "onset_s": 6.5,
+      "duration_s": 1.497,
+      "digits": [
+        "thumb",
+        "middle"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 9.399,
+      "duration_s": 0.851,
+      "digits": [
+        "thumb",
+        "middle"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 11.061,
+      "duration_s": 1.273,
+      "digits": [
+        "thumb",
+        "middle"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 13.266,
+      "duration_s": 0.507,
+      "digits": [
+        "thumb",
+        "pinky"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 14.879,
+      "duration_s": 1.034,
+      "digits": [
+        "thumb",
+        "ring"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 17.298,
+      "duration_s": 0.667,
+      "digits": [
+        "thumb",
+        "ring"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 18.831,
+      "duration_s": 1.96,
+      "digits": [
+        "thumb",
+        "ring"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 21.673,
+      "duration_s": 0.888,
+      "digits": [
+        "thumb",
+        "ring"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 23.869,
+      "duration_s": 1.728,
+      "digits": [
+        "thumb",
+        "pinky"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 26.594,
+      "duration_s": 1.238,
+      "digits": [
+        "thumb",
+        "pinky"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 28.762,
+      "duration_s": 1.09,
+      "digits": [
+        "thumb",
+        "pinky"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 31.087,
+      "duration_s": 1.842,
+      "digits": [
+        "thumb",
+        "pinky"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    }
+  ]
+}

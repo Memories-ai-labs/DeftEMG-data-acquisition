@@ -1,0 +1,207 @@
+{
+  "name": "seq_multi_b01",
+  "task": "scroll_prompter",
+  "task_set": "multi",
+  "params": {
+    "task_set": "multi",
+    "reps": 3,
+    "chord_sizes": [
+      2
+    ],
+    "chord_force": "same",
+    "hold_s": [
+      0.5,
+      2.0
+    ],
+    "gap_s": [
+      0.8,
+      1.5
+    ],
+    "lead_in_s": 6.5,
+    "per_block": 15,
+    "seed": 341536910,
+    "block": 1
+  },
+  "prompts": [
+    {
+      "onset_s": 6.5,
+      "duration_s": 1.405,
+      "digits": [
+        "index",
+        "middle"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 8.89,
+      "duration_s": 0.847,
+      "digits": [
+        "thumb",
+        "pinky"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 10.747,
+      "duration_s": 0.666,
+      "digits": [
+        "index",
+        "pinky"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 12.799,
+      "duration_s": 1.562,
+      "digits": [
+        "index",
+        "ring"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 15.212,
+      "duration_s": 1.751,
+      "digits": [
+        "middle",
+        "ring"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 18.234,
+      "duration_s": 1.762,
+      "digits": [
+        "index",
+        "pinky"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 21.297,
+      "duration_s": 0.833,
+      "digits": [
+        "ring",
+        "pinky"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 23.558,
+      "duration_s": 1.799,
+      "digits": [
+        "thumb",
+        "ring"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 26.298,
+      "duration_s": 1.384,
+      "digits": [
+        "thumb",
+        "middle"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 29.028,
+      "duration_s": 0.617,
+      "digits": [
+        "thumb",
+        "pinky"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 30.762,
+      "duration_s": 1.591,
+      "digits": [
+        "index",
+        "ring"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 33.357,
+      "duration_s": 0.838,
+      "digits": [
+        "thumb",
+        "pinky"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 35.209,
+      "duration_s": 1.358,
+      "digits": [
+        "middle",
+        "ring"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 37.538,
+      "duration_s": 0.767,
+      "digits": [
+        "thumb",
+        "pinky"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 39.661,
+      "duration_s": 0.887,
+      "digits": [
+        "middle",
+        "ring"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    }
+  ]
+}

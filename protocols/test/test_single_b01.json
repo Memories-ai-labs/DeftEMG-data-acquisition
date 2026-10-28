@@ -1,0 +1,77 @@
+{
+  "name": "test_single_b01",
+  "task": "scroll_prompter",
+  "task_set": "single",
+  "params": {
+    "task_set": "single",
+    "reps": 1,
+    "chord_sizes": [
+      2
+    ],
+    "chord_force": "same",
+    "hold_s": [
+      0.5,
+      2.0
+    ],
+    "gap_s": [
+      0.8,
+      1.5
+    ],
+    "lead_in_s": 6.5,
+    "per_block": 5,
+    "seed": 0,
+    "block": 1
+  },
+  "prompts": [
+    {
+      "onset_s": 6.5,
+      "duration_s": 1.41,
+      "digits": [
+        "middle"
+      ],
+      "levels": [
+        "low"
+      ]
+    },
+    {
+      "onset_s": 9.221,
+      "duration_s": 1.315,
+      "digits": [
+        "ring"
+      ],
+      "levels": [
+        "low"
+      ]
+    },
+    {
+      "onset_s": 11.991,
+      "duration_s": 1.724,
+      "digits": [
+        "index"
+      ],
+      "levels": [
+        "low"
+      ]
+    },
+    {
+      "onset_s": 14.516,
+      "duration_s": 1.786,
+      "digits": [
+        "ring"
+      ],
+      "levels": [
+        "high"
+      ]
+    },
+    {
+      "onset_s": 17.126,
+      "duration_s": 1.594,
+      "digits": [
+        "index"
+      ],
+      "levels": [
+        "high"
+      ]
+    }
+  ]
+}

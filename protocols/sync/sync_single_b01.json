@@ -1,0 +1,177 @@
+{
+  "name": "sync_single_b01",
+  "task": "scroll_prompter",
+  "task_set": "single",
+  "params": {
+    "task_set": "single",
+    "reps": 3,
+    "chord_sizes": [
+      2
+    ],
+    "chord_force": "same",
+    "hold_s": [
+      0.5,
+      0.5
+    ],
+    "gap_s": [
+      0.8,
+      1.5
+    ],
+    "lead_in_s": 6.5,
+    "per_block": 15,
+    "seed": 0,
+    "block": 1
+  },
+  "prompts": [
+    {
+      "onset_s": 6.5,
+      "duration_s": 0.5,
+      "digits": [
+        "index"
+      ],
+      "levels": [
+        "low"
+      ]
+    },
+    {
+      "onset_s": 8.231,
+      "duration_s": 0.5,
+      "digits": [
+        "thumb"
+      ],
+      "levels": [
+        "high"
+      ]
+    },
+    {
+      "onset_s": 10.229,
+      "duration_s": 0.5,
+      "digits": [
+        "ring"
+      ],
+      "levels": [
+        "low"
+      ]
+    },
+    {
+      "onset_s": 12.009,
+      "duration_s": 0.5,
+      "digits": [
+        "thumb"
+      ],
+      "levels": [
+        "high"
+      ]
+    },
+    {
+      "onset_s": 13.791,
+      "duration_s": 0.5,
+      "digits": [
+        "thumb"
+      ],
+      "levels": [
+        "low"
+      ]
+    },
+    {
+      "onset_s": 15.185,
+      "duration_s": 0.5,
+      "digits": [
+        "middle"
+      ],
+      "levels": [
+        "low"
+      ]
+    },
+    {
+      "onset_s": 16.853,
+      "duration_s": 0.5,
+      "digits": [
+        "pinky"
+      ],
+      "levels": [
+        "low"
+      ]
+    },
+    {
+      "onset_s": 18.493,
+      "duration_s": 0.5,
+      "digits": [
+        "ring"
+      ],
+      "levels": [
+        "low"
+      ]
+    },
+    {
+      "onset_s": 20.447,
+      "duration_s": 0.5,
+      "digits": [
+        "index"
+      ],
+      "levels": [
+        "high"
+      ]
+    },
+    {
+      "onset_s": 22.147,
+      "duration_s": 0.5,
+      "digits": [
+        "ring"
+      ],
+      "levels": [
+        "low"
+      ]
+    },
+    {
+      "onset_s": 23.863,
+      "duration_s": 0.5,
+      "digits": [
+        "pinky"
+      ],
+      "levels": [
+        "low"
+      ]
+    },
+    {
+      "onset_s": 25.437,
+      "duration_s": 0.5,
+      "digits": [
+        "middle"
+      ],
+      "levels": [
+        "high"
+      ]
+    },
+    {
+      "onset_s": 26.896,
+      "duration_s": 0.5,
+      "digits": [
+        "index"
+      ],
+      "levels": [
+        "high"
+      ]
+    },
+    {
+      "onset_s": 28.255,
+      "duration_s": 0.5,
+      "digits": [
+        "pinky"
+      ],
+      "levels": [
+        "high"
+      ]
+    },
+    {
+      "onset_s": 30.106,
+      "duration_s": 0.5,
+      "digits": [
+        "pinky"
+      ],
+      "levels": [
+        "low"
+      ]
+    }
+  ]
+}

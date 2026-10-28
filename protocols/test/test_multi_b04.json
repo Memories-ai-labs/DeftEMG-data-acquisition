@@ -1,0 +1,87 @@
+{
+  "name": "test_multi_b04",
+  "task": "scroll_prompter",
+  "task_set": "multi",
+  "params": {
+    "task_set": "multi",
+    "reps": 1,
+    "chord_sizes": [
+      2
+    ],
+    "chord_force": "same",
+    "hold_s": [
+      0.5,
+      2.0
+    ],
+    "gap_s": [
+      0.8,
+      1.5
+    ],
+    "lead_in_s": 6.5,
+    "per_block": 5,
+    "seed": 0,
+    "block": 4
+  },
+  "prompts": [
+    {
+      "onset_s": 6.5,
+      "duration_s": 0.626,
+      "digits": [
+        "middle",
+        "pinky"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 8.509,
+      "duration_s": 1.681,
+      "digits": [
+        "middle",
+        "ring"
+      ],
+      "levels": [
+        "low",
+        "low"
+      ]
+    },
+    {
+      "onset_s": 11.157,
+      "duration_s": 1.815,
+      "digits": [
+        "index",
+        "middle"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 13.813,
+      "duration_s": 1.004,
+      "digits": [
+        "thumb",
+        "index"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    },
+    {
+      "onset_s": 15.722,
+      "duration_s": 1.176,
+      "digits": [
+        "middle",
+        "ring"
+      ],
+      "levels": [
+        "high",
+        "high"
+      ]
+    }
+  ]
+}

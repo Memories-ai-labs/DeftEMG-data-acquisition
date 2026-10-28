@@ -1,0 +1,23 @@
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Data (keep folder structure only)
+data/**
+!data/**/
+!data/**/.gitkeep
+
+# macOS
+.DS_Store
+
+# Written by check-timing when trying the example session
+examples/**/*_timing.npz
+examples/**/timing.json

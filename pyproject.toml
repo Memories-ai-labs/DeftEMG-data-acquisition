@@ -1,0 +1,77 @@
+[project]
+name = "deftemg-acquisition"
+version = "0.1.0"
+description = "Record, prompt and check EMG from the WAVELETECH 18-channel armband"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">= 3.12"
+dependencies = [
+  "numpy>=2",
+  "scipy>=1.13",
+  "pyserial>=3.5",
+  "pyqtgraph>=0.14",
+  "PyQt5>=5.15",
+  "pylsl>=1.18.6,<2",
+]
+
+[build-system]
+build-backend = "hatchling.build"
+requires = ["hatchling>=1.27"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deftemg_acquisition"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [".github", ".vscode", "examples"]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["osx-arm64", "osx-64", "linux-64"]
+requires-pixi = ">=0.82"
+
+[tool.pixi.pypi-dependencies]
+deftemg-acquisition = { path = ".", editable = true }
+
+[tool.pixi.tasks]
+test = "pytest"
+lint = "ruff check ."
+format = "ruff format ."
+acquire = "python -m deftemg_acquisition.cli.acquire"
+viewer = "python -m deftemg_acquisition.viz.viewer"
+prompter = "python -m deftemg_acquisition.cli.prompter"
+make-sequences = "python -m deftemg_acquisition.cli.make_sequences"
+check-timing = "python -m deftemg_acquisition.cli.check_timing"
+filter-emg = "python -m deftemg_acquisition.cli.filter_emg"
+replay = "python -m deftemg_acquisition.viz.replay"
+make-synthetic = "python -m deftemg_acquisition.cli.make_synthetic"
+
+[tool.pixi.dependencies]
+python = "3.12.*"
+numpy = ">=2.5.4,<3"
+scipy = ">=1.18.1,<2"
+pyserial = ">=3.5,<4"
+pyqtgraph = ">=0.14.0,<0.15"
+pyqt = ">=5.15.11,<6"
+
+# PyPI's Linux pylsl wheel doesn't bundle liblsl; pylsl finds this one in the environment's lib/
+[tool.pixi.target.linux-64.dependencies]
+liblsl = "*"
+
+[tool.pixi.feature.dev.dependencies]
+pytest = ">=9.1.1,<10"
+ruff = ">=0.17.0,<0.18"
+
+[tool.pixi.environments]
+default = ["dev"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+extend-exclude = [".pixi"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
