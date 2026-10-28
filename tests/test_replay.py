@@ -15,9 +15,13 @@ def test_load_trial(prompter_trial):
     d = load_trial(npz)
     assert d.hand == "left" and d.sequence is not None and len(d.prompts) == 2
     assert [p.label for p in d.prompts] == ["index H", "thumb+pinky L/H"]
-    # Prompt marks are on the EMG timeline: drawn onset = scroll start + scheduled onset (+frame)
-    for mark, prompt in zip(d.prompts, d.sequence.prompts, strict=True):
-        assert 0 <= mark.onset_s - (d.scroll_start_s + prompt.onset_s) < 0.05
+    # Prompt marks are on the EMG timeline at the drawn onset: the first frame showing the press,
+    # at or after the scheduled one (how much after depends on the machine's load)
+    with np.load(npz) as arrays:
+        drawn = (arrays["prompt_onset_paint_ns"] - d.t0_ns) / 1e9
+    for mark, prompt, at in zip(d.prompts, d.sequence.prompts, drawn, strict=True):
+        assert mark.onset_s == pytest.approx(at, abs=1e-9)
+        assert mark.onset_s >= d.scroll_start_s + prompt.onset_s
     assert d.emg_uv.shape == (len(d.emg_t), 18) and np.all(np.diff(d.emg_t) > 0)
     assert d.duration_s == pytest.approx(d.emg_t[-1])
 

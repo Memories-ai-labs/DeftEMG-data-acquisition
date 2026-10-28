@@ -1,12 +1,27 @@
 """Fixtures shared across test modules (session-scoped: each is built once per test run)."""
 
 import os
+import sys
 import time
+import traceback
 
 import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+
+@pytest.fixture(autouse=True)
+def qt_callback_errors(monkeypatch):
+    """A Python exception inside a Qt callback (a timer, a paint) fails the running test, with
+    its traceback. Without an exception hook PyQt aborts the whole run instead, and the output
+    pytest captured, that traceback included, is lost."""
+    caught = []
+    monkeypatch.setattr(sys, "excepthook", lambda *exc: caught.append(exc))
+    yield
+    if caught:
+        text = "".join(traceback.format_exception(*caught[0]))
+        pytest.fail(f"exception in a Qt callback:\n{text}", pytrace=False)
 
 
 @pytest.fixture(scope="session")
