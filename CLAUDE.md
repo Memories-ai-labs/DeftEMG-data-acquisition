@@ -18,7 +18,8 @@ the trial-loading data chain they share.
 - Example and test data are synthetic (`pixi run make-synthetic`); never commit recordings.
 - Anything pushed to GitHub, on any branch, is public at once and stays public: check before
   pushing, not after. If a pre-push check refuses a push, stop and ask the maintainer; never
-  bypass it (`--no-verify`, override variables, other hook settings).
+  bypass it (`--no-verify`, override variables, other hook settings). `.claude/settings.json`
+  denies the usual ways.
 
 ## Workflow
 
