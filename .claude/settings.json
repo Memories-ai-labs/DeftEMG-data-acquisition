@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "deny": [
+      "Bash(*git *--no-verify*)",
+      "Bash(*core.hooksPath*)",
+      "Bash(*core.hookspath*)",
+      "Bash(*core.HooksPath*)",
+      "Bash(rm *pre-push*)",
+      "Bash(mv *pre-push*)",
+      "Bash(chmod *pre-push*)",
+      "Edit(/.git/hooks/**)"
+    ]
+  }
+}
