@@ -30,6 +30,7 @@ from deftemg_acquisition.system import keep_awake
 from .device import Armband, DeviceError
 from .protocol import STALL_GAP_S, FilterStatus
 from .recorder import TrialRecorder
+from .sources import TrialSource
 
 log = logging.getLogger(__name__)
 
@@ -75,6 +76,7 @@ class TrialResult:
     # (wall_ns, host_ns) pairs at trial start (when TIME was set) and end; see clock.py
     anchor_start: dict[str, int] = field(default_factory=dict)
     anchor_end: dict[str, int] = field(default_factory=dict)
+    sources: dict[str, Any] = field(default_factory=dict)  # per extra device (sources.py)
 
     @property
     def duration_s(self) -> float:
@@ -91,11 +93,24 @@ class AcquisitionSession:
     In continuous mode (default) the device streams from :meth:`open` to :meth:`close` and a
     trial only selects which bytes are saved. Otherwise each trial sends StartDataAcq and
     StopDataAcq. If ``live_stream`` is set, all data and trial markers also go out over LSL.
+
+    ``sources``: extra devices recorded with every trial (:class:`~.sources.TrialSource`),
+    e.g. a data glove; their arrays go into the same ``.npz``, prefixed with their name.
     """
 
-    def __init__(self, config: SessionConfig, device: Armband | None = None):
+    def __init__(
+        self,
+        config: SessionConfig,
+        device: Armband | None = None,
+        sources: list[TrialSource] | tuple[TrialSource, ...] = (),
+    ):
         self.config = config
         self.device = device or Armband(config.port)
+        self.sources = list(sources)
+        names = [src.name for src in self.sources]
+        if len(set(names)) != len(names):
+            raise ValueError(f"source names must be unique: {names}")
+        self._opened_sources: list[TrialSource] = []
         name = config.session_name or datetime.now().strftime("%Y%m%d-%H%M%S")
         self.session_dir = Path(config.data_dir) / name
         self.filter_status: FilterStatus | None = None
@@ -142,6 +157,11 @@ class AcquisitionSession:
             if self.config.continuous:
                 self.device.set_timestamp(anchor()["wall_ns"] // 1_000_000)
                 self.device.start_acquisition()
+            source_info = {}
+            for src in self.sources:
+                source_info[src.name] = src.open()
+                self._opened_sources.append(src)
+                log.info("source %s ready: %s", src.name, source_info[src.name])
         except Exception:
             self._shutdown()
             raise
@@ -156,6 +176,8 @@ class AcquisitionSession:
             "clock_anchor": anchor(),
             "metadata": self.config.metadata,
         }
+        if self.sources:
+            info["sources"] = source_info
         (self.session_dir / "session.json").write_text(json.dumps(info, indent=2))
 
     def live_emg_filter(self) -> EmgFilter | None:
@@ -180,6 +202,12 @@ class AcquisitionSession:
             if self.live is not None:
                 self.live.stop()
                 self.live = None
+            for src in reversed(self._opened_sources):
+                try:
+                    src.close()
+                except Exception:
+                    log.exception("source %s: close failed", src.name)
+            self._opened_sources = []
             if self._caffeinate is not None:
                 self._caffeinate.terminate()
                 self._caffeinate = None
@@ -220,6 +248,11 @@ class AcquisitionSession:
             except Exception:
                 self.device.detach_sink("trial")
                 raise
+        for src in self.sources:
+            try:
+                src.start_trial(self.next_index, host_start_ns)
+            except Exception:
+                log.exception("source %s: start_trial failed", src.name)
         self._recorder = recorder
         self._pending = {
             "index": self.next_index,
@@ -261,6 +294,7 @@ class AcquisitionSession:
                 self.live.push_marker(f"trial_end|{pending['index']}")
 
         pending["metadata"] = {**pending["metadata"], **metadata}
+        source_arrays, source_meta = self._end_sources(host_end_ns)
         stem = self.session_dir / f"trial_{pending['index']:03d}"
         if pending["label"]:
             stem = stem.with_name(f"{stem.name}_{_slug(pending['label'])}")
@@ -277,6 +311,7 @@ class AcquisitionSession:
                 "anchor_host_ns": pending["anchor_start"]["host_ns"],
                 "anchor_end_wall_ns": anchor_end["wall_ns"],
                 "anchor_end_host_ns": anchor_end["host_ns"],
+                **source_arrays,
                 **(arrays or {}),
             },
         )
@@ -293,6 +328,7 @@ class AcquisitionSession:
             n_dropped=int(decoded["n_dropped"]),
             raw_path=str(files.raw),
             npz_path=str(files.npz),
+            sources=source_meta,
             **pending,
         )
         self.trials.append(result)
@@ -314,6 +350,22 @@ class AcquisitionSession:
                 result.stalled_s,
             )
         return result
+
+    def _end_sources(self, host_end_ns: int) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Each source's arrays (prefixed with its name) and metadata for the ending trial; a
+        source that fails is recorded as such and never stops the armband data being saved."""
+        arrays: dict[str, Any] = {}
+        meta: dict[str, Any] = {}
+        for src in self.sources:
+            try:
+                src_arrays, src_meta = src.end_trial(host_end_ns)
+            except Exception as e:
+                log.exception("source %s: end_trial failed", src.name)
+                meta[src.name] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                continue
+            arrays.update({f"{src.name}_{k}": v for k, v in src_arrays.items()})
+            meta[src.name] = {"ok": True, **src_meta}
+        return arrays, meta
 
 
 def _slug(s: str) -> str:

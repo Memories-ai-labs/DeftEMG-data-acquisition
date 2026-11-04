@@ -11,6 +11,9 @@ out to sit right of the prompter (the band RMS on the left of the EMG, the contr
 rows); ``--geometry X Y W H``: where its window goes, frame included (``viz.screen``:
 ``prompter --viewer`` puts it on the right of the screen, the prompter on the left).
 
+When a Wuji Glove streams too (``acquire --wuji``, ``--wuji-simulate``, ``--wuji-replay``), a
+glove panel appears in the side column: tactile map, joint angles and contact (``viz.glove``).
+
 Other code can add panels under the band RMS (``panels``: :class:`ViewerPanel`, e.g. another
 LSL stream) and its own options (``parser`` and ``run``).
 """
@@ -126,11 +129,12 @@ class Viewer(QtWidgets.QMainWindow):
     def __init__(
         self, window_s: float, spectrum_s: float, arm: str = "right", compact: bool = False,
         beside: bool = False, panels: list[ViewerPanel] | tuple[ViewerPanel, ...] = (),
+        glove: bool = True,
     ):  # fmt: skip
         """``compact``: the EMG traces and the band RMS only, with their controls (no spectrum,
         IMU or status line). ``beside`` (right of the prompter): the side panels left of the
         EMG traces, the controls on two rows. ``panels``: more side panels, under the band
-        RMS."""
+        RMS. ``glove``: a glove panel (``viz.glove``), shown when a glove streams."""
         super().__init__()
         self.setWindowTitle("EMG armband – live")
         self.spectrum_s = spectrum_s
@@ -154,9 +158,15 @@ class Viewer(QtWidgets.QMainWindow):
         self.spectrum = None if compact else SpectrumPlot()
         self.imu_plots = None if compact else ImuPlots()
         self.panels = list(panels)
+        self.glove = None
+        if glove:
+            from deftemg_acquisition.viz.glove import GlovePanel  # it builds on this module
+
+            self.glove = GlovePanel()
+        self._side_panels = self.panels + ([self.glove] if self.glove else [])
 
         side = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        column = [(self.band.widget, 340)] + [(pn.widget, pn.height) for pn in self.panels]
+        column = [(self.band.widget, 340)] + [(pn.widget, pn.height) for pn in self._side_panels]
         if not compact:
             column += [(self.spectrum, 190), (self.imu_plots.gyro, 150), (self.imu_plots.acc, 150)]
         for w, _ in column:
@@ -203,7 +213,7 @@ class Viewer(QtWidgets.QMainWindow):
         self.emg.poll()
         if self.imu is not None:
             self.imu.poll()
-        for pn in self.panels:
+        for pn in self._side_panels:
             pn.poll()
         for t, m in self.markers.poll():
             self.add_marker(t, m)
@@ -219,7 +229,7 @@ class Viewer(QtWidgets.QMainWindow):
         if self.imu is not None:
             ti, xi = self.imu.ring.latest(int(win * 208))
             self.imu_plots.draw(ti - now, xi[:, 0:3], xi[:, 3:6], win)
-        for pn in self.panels:
+        for pn in self._side_panels:
             pn.draw(now, win)
         self.traces.place_markers(now, keep_s=MAX_WINDOW_S)
         _, xr = self.emg.ring.latest(int(self.band.window_s * 2000))

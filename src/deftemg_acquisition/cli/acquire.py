@@ -21,7 +21,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig, subjects
+from deftemg_acquisition.acquisition import (
+    AcquisitionSession,
+    Armband,
+    SessionConfig,
+    subjects,
+    wuji,
+)
 
 START_KEY, END_KEY, QUIT_KEY = "s", "e", "q"
 
@@ -75,6 +81,7 @@ def main() -> None:
     ap.add_argument("--simulate", action="store_true", help="use a simulated armband")
     ap.add_argument("-v", "--verbose", action="store_true")
     subjects.add_arguments(ap)
+    wuji.add_arguments(ap)
     args = ap.parse_args()
     donning = subjects.donning_from_args(args, args.data_dir)
 
@@ -109,13 +116,15 @@ def main() -> None:
 
         device = Armband("simulated", ser=SimulatedArmband())
 
+    sources = wuji.sources_from_args(args)
+
     viewer = None
     if args.viewer:
         viewer = subprocess.Popen(
             [sys.executable, "-m", "deftemg_acquisition.viz.viewer", "--arm", args.arm]
         )
     try:
-        with AcquisitionSession(config, device=device) as session:
+        with AcquisitionSession(config, device=device, sources=sources) as session:
             print(f"Saving to {session.session_dir}")
             print(f"[{START_KEY}] start trial   [{END_KEY}] end trial   [{QUIT_KEY}] quit")
             with cbreak_keys() as keys:

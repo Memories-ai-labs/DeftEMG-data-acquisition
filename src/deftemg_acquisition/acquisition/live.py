@@ -99,12 +99,12 @@ class LiveFilter:
 
 
 def make_outlet(
-    name, stype, channels, units, rate, fmt, source_id, **desc: str
+    name, stype, channels, units, rate, fmt, source_id, manufacturer="WAVELETECH", **desc: str
 ) -> pylsl.StreamOutlet:
     """An LSL outlet with channel labels and units. Another stream joins the session's by
     sharing its ``source_id`` (``LiveStreamer.source_id``), named with ``STREAM_PREFIX``."""
     info = pylsl.StreamInfo(name, stype, len(channels), rate, fmt, source_id)
-    info.desc().append_child_value("manufacturer", "WAVELETECH")
+    info.desc().append_child_value("manufacturer", manufacturer)
     for key, value in desc.items():
         info.desc().append_child_value(key, value)
     chans = info.desc().append_child("channels")

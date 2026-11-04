@@ -50,7 +50,13 @@ from pathlib import Path
 
 import pyqtgraph as pg
 
-from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig, subjects
+from deftemg_acquisition.acquisition import (
+    AcquisitionSession,
+    Armband,
+    SessionConfig,
+    subjects,
+    wuji,
+)
 from deftemg_acquisition.tasks.app import TaskPlugin, TaskWindow
 from deftemg_acquisition.tasks.effort import ZONES
 from deftemg_acquisition.tasks.prompter import DEFAULT_LOOKAHEAD_S
@@ -168,6 +174,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-stream", action="store_true", help="don't publish over LSL")
     ap.add_argument("-v", "--verbose", action="store_true")
     subjects.add_arguments(ap)
+    wuji.add_arguments(ap)
     return ap
 
 
@@ -235,6 +242,7 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
         device = ReplayArmband(stream, speed=args.replay_speed)
         config.filter_enabled = stream.filter_status.enabled
         config.metadata["replay"] = [str(p) for p in args.replay]
+    sources = wuji.sources_from_args(args)
     plugins = ext.plugins(args, config)
 
     viewer = left = None
@@ -253,7 +261,7 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
              "--beside", *geometry_args(right)]
         )  # fmt: skip
     try:
-        with AcquisitionSession(config, device=device) as session:
+        with AcquisitionSession(config, device=device, sources=sources) as session:
             print(f"Saving to {session.session_dir}")
             app = pg.mkQApp("Prompter")
             win = TaskWindow(
