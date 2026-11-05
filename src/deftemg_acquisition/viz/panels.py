@@ -28,6 +28,25 @@ DEFAULT_RMS_MAX_UV = 100.0  # band RMS at the top of the colour scale (fixed unl
 SPECTRUM_CHOICES = ["Mean of channels", "All channels", *EMG_CHANNELS]
 
 
+def peak_envelope(t: np.ndarray, x: np.ndarray, columns: int) -> tuple[np.ndarray, np.ndarray]:
+    """``x`` (n, channels) against ``t`` reduced to each column's min then max, for all
+    channels at once: what a trace ``columns`` pixels wide can show (pyqtgraph's "peak"
+    downsampling, without its per-curve work). The oldest ``n % k`` samples (k per column)
+    are left out, so the newest stay at the right edge. Unchanged when n < 2 * columns."""
+    n = len(t)
+    k = n // max(columns, 1)
+    if k < 2:
+        return t, x
+    m = n // k
+    tb = t[n - m * k :].reshape(m, k)
+    xb = x[n - m * k :].reshape(m, k, x.shape[1])
+    env = np.empty((m, 2, x.shape[1]), x.dtype)
+    xb.min(axis=1, out=env[:, 0])
+    xb.max(axis=1, out=env[:, 1])
+    tt = np.stack([tb[:, 0], tb[:, -1]], axis=1)  # a column's start and end
+    return tt.reshape(-1), env.reshape(2 * m, x.shape[1])
+
+
 def auto_spacing(x: np.ndarray) -> float:
     """Trace spacing that fits the typical channel's peaks (99.5th pct of |x|) in its lane."""
     if not len(x):
@@ -140,11 +159,15 @@ class TracePlot(pg.PlotWidget):
         self.getAxis("left").setWidth(44)  # room for "ch18"; labels that don't fit are dropped
         self.curves = []
         for color in CHANNEL_COLORS:
+            # draw() reduces the data to the plot's width itself (peak_envelope), for all
+            # channels at once; pyqtgraph's own downsampling and clipping would redo it per curve
             c = self.plot(pen=pg.mkPen(color, width=1))
-            c.setDownsampling(auto=True, method="peak")
-            c.setClipToView(True)
             self.curves.append(c)
         self.markers: list[tuple[float, pg.InfiniteLine]] = []  # (time, line), caller's timeline
+        self._view: tuple[float, float] | None = None  # (spacing, window_s) the axes show
+        # The window and spacing controls set the view (draw() kept resetting a mouse zoom)
+        self.setMouseEnabled(x=False, y=False)
+        self.hideButtons()
 
     def draw(
         self, rel_t: np.ndarray, x: np.ndarray, spacing: float, window_s: float, remove_offset: bool
@@ -152,15 +175,23 @@ class TracePlot(pg.PlotWidget):
         if len(rel_t):
             if remove_offset:
                 x = x - x.mean(axis=0)
+            # one min and max per column of the plot (logical pixels, as pyqtgraph's own
+            # downsampling); 1000 before it is laid out
+            columns = int(self.getViewBox().width()) or 1000
+            t, env = peak_envelope(rel_t, x, columns)
+            env = env - np.arange(len(self.curves)) * spacing
             for i, c in enumerate(self.curves):
-                c.setData(rel_t, x[:, i] - i * spacing)
+                c.setData(t, env[:, i], skipFiniteCheck=True)
         else:
             for c in self.curves:
                 c.setData([], [])
-        n = len(self.curves)
-        self.getAxis("left").setTicks([[(-i * spacing, EMG_CHANNELS[i]) for i in range(n)]])
-        self.setYRange(-(n - 0.5) * spacing, 0.5 * spacing, padding=0)
-        self.setXRange(-window_s, 0, padding=0)
+        # Ticks and ranges only when they change: setting them redraws the axes
+        if self._view != (spacing, window_s):
+            self._view = (spacing, window_s)
+            n = len(self.curves)
+            self.getAxis("left").setTicks([[(-i * spacing, EMG_CHANNELS[i]) for i in range(n)]])
+            self.setYRange(-(n - 0.5) * spacing, 0.5 * spacing, padding=0)
+            self.setXRange(-window_s, 0, padding=0)
 
     def add_marker(self, t: float, text: str, color: str, width: float = 2) -> None:
         """A labelled vertical line at time ``t``, shown once ``now`` reaches it."""
