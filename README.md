@@ -136,6 +136,10 @@ pixi run viewer --window 10         # seconds of data shown (default 5)
 The viewer shows:
 - **EMG traces:** 18 channels, one colour each (red → orange → yellow → green → blue → back
   to red).
+  They scroll right to left by default. **Sweep** stands them still instead: a cursor at the
+  newest sample moves left to right and replaces the previous sweep as it goes (the IMU
+  follows). Where there is a GPU (Linux with PyOpenGL, a hardware renderer), the traces are
+  drawn by it at the screen's refresh rate; `VIEWER_GPU=0` draws them with the CPU.
 - **Spectrum:** mean of channels, all channels, or a single channel, with lines at
   60/120/180 Hz to check line noise.
 - **IMU:** gyro and accelerometer.
@@ -523,6 +527,8 @@ Other packages can add to the tools without copying them, e.g. to show a model's
 - `viz.viewer.ViewerPanel` and `viz.replay.ReplayPanel`: more panels in the live viewer (under
   the band RMS) and in replay (under the EMG traces, with a caption under the prompter and a
   status in the transport bar). `parser()` and `run()` let a command add its own options.
+  A viewer panel's `sweep` says whether the traces sweep (the "Sweep" box) or scroll, so a
+  panel showing time can do the same.
 - `cli.prompter.PrompterExtension`: more prompter options, task window plugins and live viewer
   options (`prompter.main(extension=...)`).
 

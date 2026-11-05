@@ -116,6 +116,10 @@ class ViewerPanel:
 
     widget: QtWidgets.QWidget
     height: int = 300
+    # Set by the viewer before each draw: whether the EMG traces sweep (the "Sweep" box) rather
+    # than scroll; a panel showing time can follow it (time in the sweep: ``now`` mod
+    # ``window_s``, the cursor at ``now``; see ``panels.sweep_points``)
+    sweep: bool = False
 
     def poll(self) -> None:
         """Every frame, paused or not (e.g. pull new data)."""
@@ -253,6 +257,7 @@ class Viewer(QtWidgets.QMainWindow):
             ti, xi = self.imu.ring.latest(int(win * 208))
             self.imu_plots.draw(ti - now, xi[:, 0:3], xi[:, 3:6], win, sweep_now=sweep_now)
         for pn in self.panels:
+            pn.sweep = sweep_now is not None
             pn.draw(now, win)
         self.traces.place_markers(now, keep_s=MAX_WINDOW_S)
         _, xr = self.emg.ring.latest(int(self.band.window_s * 2000))
