@@ -247,8 +247,7 @@ class Viewer(QtWidgets.QMainWindow):
         sweep_now = now if self.controls.sweep_box.isChecked() else None
         self.traces.draw(
             t - now, x, self.controls.spacing, win, self.controls.offset_box.isChecked(),
-            first_index=self.emg.ring.n - len(t),  # columns that keep their samples
-            sweep_now=sweep_now,
+            sweep_now=sweep_now, now=now,
         )  # fmt: skip
         if self.imu is not None:
             ti, xi = self.imu.ring.latest(int(win * 208))

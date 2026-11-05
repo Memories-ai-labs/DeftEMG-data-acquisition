@@ -36,6 +36,7 @@ from deftemg_acquisition.viz.panels import (
     marker_place,
     peak_envelope,
     samples_per_column,
+    scroll_envelope,
     sweep_envelope,
 )
 
@@ -175,12 +176,15 @@ class GpuTracePlot(QtWidgets.QWidget):
     def draw(
         self, rel_t: np.ndarray, x: np.ndarray, spacing: float, window_s: float,
         remove_offset: bool, first_index: int = 0, sweep_now: float | None = None,
+        now: float | None = None,
     ) -> None:  # fmt: skip
-        """As ``TracePlot.draw``: ``first_index`` for scrolling, ``sweep_now`` to sweep."""
+        """As ``TracePlot.draw``."""
         if len(rel_t) and remove_offset:
             x = x - x.mean(axis=0)
         # one min and max per column of the plot (logical pixels, as TracePlot)
-        columns = max(1, self.canvas.width() - self.LEFT - self.RIGHT)
+        columns = self.canvas.width() - self.LEFT - self.RIGHT
+        if columns < 10:  # not laid out yet
+            columns = 1000
         self._sweep = None
         if not len(rel_t):
             self._t, self._x = rel_t, x
@@ -188,6 +192,8 @@ class GpuTracePlot(QtWidgets.QWidget):
             t_abs = rel_t + sweep_now
             self._t, self._x, self._cursor = sweep_envelope(t_abs, x, window_s, columns)
             self._sweep = (window_s, float(rel_t[-1] + sweep_now))
+        elif now is not None:  # one column a pixel: the picture moves in whole pixels
+            self._t, self._x = scroll_envelope(rel_t + now, x, window_s, columns, now)
         else:
             k = samples_per_column(window_s, columns)
             self._t, self._x = peak_envelope(rel_t, x, k, first_index)

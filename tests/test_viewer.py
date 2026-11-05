@@ -168,11 +168,11 @@ def test_gpu_trace_plot_draws_traces_axes_and_markers():
 
 def test_sweep_columns_hold_still_and_break_at_the_cursor():
     """Sweeping, each column holds a fixed slice of time on a fixed place on the screen:
-    drawn once, unchanged as the cursor moves on, until the next sweep clears it. The line
-    breaks at the cursor (NaN), with a gap cleared ahead of it."""
+    drawn once, unchanged as the cursor moves on, until the next sweep replaces it. The line
+    breaks where the sweep wraps (NaN): the cursor's column holds the new sweep only."""
     import numpy as np
 
-    from deftemg_acquisition.viz.panels import SWEEP_GAP, marker_place, sweep_envelope
+    from deftemg_acquisition.viz.panels import marker_place, sweep_envelope
 
     rng = np.random.default_rng(1)
     t_all = 100.0 + np.arange(40_000) / 2000.0  # any clock
@@ -186,25 +186,25 @@ def test_sweep_columns_hold_still_and_break_at_the_cursor():
         t, x = t_all[end - 10_000 : end], x_all[end - 10_000 : end]
         xs, env, cursor = sweep_envelope(t, x, window, columns)
         assert cursor == t[-1] % window
-        # In time order: the last sweep's rest (from a gap ahead of the cursor to the right
+        # In time order: the last sweep's rest (from the column after the cursor's to the right
         # edge), a NaN where it wraps, then this sweep (from the left edge to the cursor)
         brk = np.flatnonzero(np.isnan(xs))
         assert len(brk) <= 1
         old, new = (xs[: brk[0]], xs[brk[0] + 1 :]) if len(brk) else (xs[:0], xs)
         assert new.min() >= 0 and new.max() <= cursor + dt
         if len(old):
-            assert old.min() >= cursor + SWEEP_GAP * window - dt and old.max() <= window
+            assert old.min() > cursor and old.max() <= window
         else:  # no wrap: everything kept is this sweep, behind the cursor
-            assert new.min() >= cursor - window * (1 - SWEEP_GAP) - dt
+            assert new.min() >= cursor - window
         # Each column (its min and max): its absolute index (sweep, place on the screen)
         sweep = int(t[-1] // window)
         cols = []
         for part, part_sweep in ((old, sweep - 1), (new, sweep)):
-            cols += [part_sweep * columns + round((left - 0.25 * dt) / dt) for left in part[0::2]]
+            cols += [part_sweep * columns + round((left - 0.2 * dt) / dt) for left in part[0::2]]
         keep = ~np.isnan(xs)
         lo, hi = env[keep][0::2], env[keep][1::2]
         assert len(cols) == len(lo)
-        # Whole columns (not the oldest, cut by the gap, nor the newest, still filling) are the
+        # Whole columns (not the oldest, being replaced, nor the newest, still filling) are the
         # same in every frame that shows them
         for i, c in enumerate(cols[1:-1], start=1):
             if c in seen:
@@ -215,7 +215,7 @@ def test_sweep_columns_hold_still_and_break_at_the_cursor():
     assert marker_place(103.0, 102.0, None)[1] is False
     newest = 107.3
     assert marker_place(106.0, newest, (window, newest)) == (106.0 % window, True)
-    assert marker_place(102.4, newest, (window, newest))[1] is False  # overwritten
+    assert marker_place(102.2, newest, (window, newest))[1] is False  # replaced
     assert marker_place(108.0, newest, (window, newest))[1] is False  # not yet
 
 
@@ -257,3 +257,33 @@ def test_traces_draw_sweeping():
     viewer = Viewer(5.0, 2.0)
     assert viewer.controls.sweep_box.parent() is viewer.controls  # offered live
     viewer.close()
+
+
+def test_scrolling_moves_in_whole_columns():
+    """Scrolling, the picture moves in whole columns (pixels): every point sits at the same
+    place inside its column in every frame, and each column keeps its min and max as it
+    moves, so nothing lands on different pixels from one frame to the next (shimmer)."""
+    import numpy as np
+
+    from deftemg_acquisition.viz.panels import scroll_envelope
+
+    rng = np.random.default_rng(3)
+    t_all = 500.0 + np.arange(40_000) / 2000.0
+    x_all = rng.standard_normal((len(t_all), 18)).astype(np.float32)
+    window, columns = 5.0, 1096
+    dt = window / columns
+    seen = {}
+    for end in (20_000, 20_033, 20_064, 20_101, 20_102, 20_170):
+        t, x = t_all[end - 10_000 : end], x_all[end - 10_000 : end]
+        now = t[-1] + 0.004  # the clock runs a little ahead of the newest sample
+        xs, env = scroll_envelope(t, x, window, columns, now)
+        assert xs.max() < 0 and xs.min() >= -window
+        pos = (xs + window) / dt  # in columns from the left edge
+        frac = np.round(pos - np.floor(pos), 6)
+        assert set(frac) <= {0.2, 0.7}
+        absolute = np.floor(pos[0::2]).astype(int) + int(np.floor(now / dt)) - columns + 1
+        lo, hi = env[0::2], env[1::2]
+        for i, c in enumerate(absolute[1:-1], start=1):  # whole columns
+            if c in seen:
+                np.testing.assert_array_equal(seen[c], (lo[i], hi[i]))
+            seen[c] = (lo[i], hi[i])

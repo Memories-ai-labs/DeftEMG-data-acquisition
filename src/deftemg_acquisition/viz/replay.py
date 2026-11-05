@@ -431,7 +431,7 @@ class ReplayWindow(QtWidgets.QMainWindow):
         a, b = np.searchsorted(d.emg_t, [now - win, now])
         self.traces.draw(
             d.emg_t[a:b] - now, d.emg_uv[a:b], self.controls.spacing, win,
-            self.controls.offset_box.isChecked(), first_index=int(a),
+            self.controls.offset_box.isChecked(), first_index=int(a), now=now,
         )  # fmt: skip
         self.traces.place_markers(now)
         ia, ib = np.searchsorted(d.imu_t, [now - win, now])

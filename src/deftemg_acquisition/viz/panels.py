@@ -6,6 +6,7 @@ so the live viewer and the replay look the same.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 
 import numpy as np
@@ -67,7 +68,6 @@ def peak_envelope(
     return tt.reshape(-1), env.reshape(-1, x.shape[1])
 
 
-SWEEP_GAP = 0.04  # share of a sweep cleared just ahead of its cursor
 SWEEP_CURSOR_COLOR = "#f0f0f0"
 
 
@@ -81,48 +81,73 @@ def _break_at_wrap(xs: np.ndarray, ys: np.ndarray) -> tuple[np.ndarray, np.ndarr
     return xs, ys
 
 
-def sweep_points(t: np.ndarray, x: np.ndarray, window_s: float, gap: float = SWEEP_GAP):
-    """A sweep display of ``x`` (n, channels) at times ``t`` (s, any clock): the screen holds
-    ``window_s``, each sample at ``t mod window_s``, and a cursor at the newest sample moves
-    left to right, replacing the previous sweep as it goes, with ``gap`` of the window
-    cleared ahead of it. Returns (x positions, values with a NaN row where the sweep wraps,
-    the cursor's position)."""
-    newest = t[-1]
-    keep = t > newest - window_s * (1 - gap)
-    xs, ys = _break_at_wrap(np.mod(t[keep], window_s), x[keep])
-    return xs, ys, float(newest % window_s)
-
-
-def sweep_envelope(
-    t: np.ndarray, x: np.ndarray, window_s: float, columns: int, gap: float = SWEEP_GAP
-):
-    """``sweep_points`` reduced to each column's min and max (as ``peak_envelope``), the
-    columns fixed on the screen and in time (``window_s / columns`` each, by the samples'
-    times, so jitter or lost packets don't move them): a column is drawn once its samples are
-    in, and stays as it is until the sweep comes round again."""
-    newest = t[-1]
-    keep = t > newest - window_s * (1 - gap)
-    t, x = t[keep], x[keep]
-    dt = window_s / max(columns, 1)
+def _columns(t: np.ndarray, x: np.ndarray, dt: float):
+    """The samples by column of ``dt`` s on a fixed time grid (column ``floor(t / dt)``):
+    each column's index and its min and max, all channels at once."""
     col = np.floor(t / dt).astype(np.int64)
     starts = np.flatnonzero(np.r_[True, col[1:] != col[:-1]])
     lo = np.minimum.reduceat(x, starts, axis=0)
     hi = np.maximum.reduceat(x, starts, axis=0)
-    left = np.mod(col[starts], columns) * dt
-    xs = np.stack([left + 0.25 * dt, left + 0.75 * dt], axis=1).reshape(-1)
-    env = np.stack([lo, hi], axis=1).reshape(-1, x.shape[1])
+    return col[starts], lo, hi
+
+
+def _column_points(left: np.ndarray, lo: np.ndarray, hi: np.ndarray, dt: float):
+    """Each column drawn as its min then max, at fixed places inside the column: 0.2 and 0.7
+    of it, clear of the half-pixel rounding edges at 100% and 200% scale, so a column moved
+    by whole pixels lands on the same pixels (at 0.25, 200% puts it on an edge)."""
+    xs = np.stack([left + 0.2 * dt, left + 0.7 * dt], axis=1).reshape(-1)
+    return xs, np.stack([lo, hi], axis=1).reshape(-1, lo.shape[1])
+
+
+def scroll_envelope(
+    t: np.ndarray, x: np.ndarray, window_s: float, columns: int, now: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """A scrolling display of ``x`` (n, channels) at times ``t`` (any clock; ``now`` on it),
+    one min and max per column of ``window_s / columns``, returned against time relative to
+    now. Columns sit on a fixed time grid and the picture moves in whole columns: each frame
+    shifts it by a whole number of pixels when ``columns`` is the plot's width, so nothing is
+    rounded differently from one frame to the next (a picture moving by fractions of a pixel
+    shimmers, its columns landing on different pixels each frame). The newest column, at the
+    right edge, is the one still filling; the right edge trails now by under a column."""
+    dt = window_s / max(columns, 1)
+    now_col = math.floor(now / dt)
+    col, lo, hi = _columns(t, x, dt)
+    keep = col > now_col - columns
+    return _column_points((col[keep] - now_col - 1) * dt, lo[keep], hi[keep], dt)
+
+
+def sweep_points(t: np.ndarray, x: np.ndarray, window_s: float):
+    """A sweep display of ``x`` (n, channels) at times ``t`` (s, any clock): the screen holds
+    ``window_s``, each sample at ``t mod window_s``, and a cursor at the newest sample moves
+    left to right, replacing the previous sweep as it goes. Returns (x positions, values with
+    a NaN row where the sweep wraps, the cursor's position)."""
+    newest = t[-1]
+    keep = t > newest - window_s
+    xs, ys = _break_at_wrap(np.mod(t[keep], window_s), x[keep])
+    return xs, ys, float(newest % window_s)
+
+
+def sweep_envelope(t: np.ndarray, x: np.ndarray, window_s: float, columns: int):
+    """``sweep_points`` reduced to each column's min and max, the columns fixed on the screen
+    and in time (``window_s / columns`` each, by the samples' times, so jitter or lost packets
+    don't move them): a column is drawn once its samples are in, and stays as it is until the
+    sweep comes round again. The cursor's column holds the new sweep only."""
+    dt = window_s / max(columns, 1)
+    col, lo, hi = _columns(t, x, dt)
+    keep = col > col[-1] - columns  # the cursor's column of the last sweep is replaced
+    xs, env = _column_points(np.mod(col[keep], columns) * dt, lo[keep], hi[keep], dt)
     xs, env = _break_at_wrap(xs, env)
-    return xs, env, float(newest % window_s)
+    return xs, env, float(t[-1] % window_s)
 
 
 def marker_place(t: float, now: float, sweep: tuple[float, float] | None) -> tuple[float, bool]:
     """Where a marker at time ``t`` goes, and whether it shows: scrolling, at ``t - now``
     once reached; sweeping (``sweep``: window, newest sample's time), where the sweep drew
-    it, until the sweep clears it."""
+    it, until the sweep replaces it."""
     if sweep is None:
         return t - now, bool(t <= now)
     window_s, newest = sweep
-    return float(t % window_s), bool(newest - window_s * (1 - SWEEP_GAP) < t <= newest)
+    return float(t % window_s), bool(newest - window_s < t <= newest)
 
 
 def auto_spacing(x: np.ndarray) -> float:
@@ -263,10 +288,12 @@ class TracePlot(pg.PlotWidget):
     def draw(
         self, rel_t: np.ndarray, x: np.ndarray, spacing: float, window_s: float,
         remove_offset: bool, first_index: int = 0, sweep_now: float | None = None,
+        now: float | None = None,
     ) -> None:  # fmt: skip
-        """``first_index``: the stream position of ``x[0]`` (``peak_envelope``).
-        ``sweep_now``: sweep instead of scrolling, ``rel_t + sweep_now`` being the samples'
-        times on a clock of their own (``sweep_envelope``)."""
+        """``now``: the samples' times are ``rel_t + now``; scrolling then moves in whole
+        columns (``scroll_envelope``). Without it, columns follow the stream position of
+        ``x[0]``, ``first_index`` (``peak_envelope``). ``sweep_now``: sweep instead of scrolling,
+        ``rel_t + sweep_now`` being the samples' times (``sweep_envelope``)."""
         sweeping = sweep_now is not None
         self._sweep = None
         if len(rel_t):
@@ -279,6 +306,8 @@ class TracePlot(pg.PlotWidget):
                 t, env, cursor = sweep_envelope(rel_t + sweep_now, x, window_s, columns)
                 self._sweep = (window_s, float(rel_t[-1] + sweep_now))
                 self.cursor.setValue(cursor)
+            elif now is not None:
+                t, env = scroll_envelope(rel_t + now, x, window_s, columns, now)
             else:
                 k = samples_per_column(window_s, columns)
                 t, env = peak_envelope(rel_t, x, k, first_index)
