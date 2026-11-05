@@ -359,3 +359,23 @@ def test_cpu_traces_redrawing_only_what_changed_match_drawing_it_all():
             if img.pixel(x, y) != ref.pixel(x, y) and not (sweep and abs(x - cursor) <= 6)
         ]  # fmt: skip
         assert not bad, (sweep, len(bad), bad[:5])
+
+
+def test_imu_plots_show_the_sweep_cursor():
+    """Sweeping, the gyro and accelerometer plots show the cursor at now, as the EMG traces
+    do; scrolling, they don't."""
+    import numpy as np
+    import pyqtgraph as pg
+
+    from deftemg_acquisition.viz.panels import ImuPlots
+
+    pg.mkQApp()
+    imu = ImuPlots()
+    now = 1000.3
+    t = now - np.arange(1000)[::-1] / 217.0
+    data = np.random.default_rng(5).standard_normal((len(t), 3))
+    imu.draw(t - now, data, data, 5.0, sweep_now=now)
+    assert all(c.isVisible() and c.value() == now % 5.0 for c in imu.cursors)
+    assert len(imu.cursors) == 2
+    imu.draw(t - now, data, data, 5.0)
+    assert not any(c.isVisible() for c in imu.cursors)

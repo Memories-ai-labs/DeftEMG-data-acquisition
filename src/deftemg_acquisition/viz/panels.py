@@ -395,6 +395,7 @@ class ImuPlots:
         self.gyro = pg.PlotWidget(title="Gyro (rad/s)")
         self.acc = pg.PlotWidget(title="Accelerometer (m/s²)")
         self.curves = []
+        self.cursors = []  # the sweep's cursor in each plot, as on the EMG traces
         self._view: tuple[float, bool] | None = None  # (window_s, sweeping) the axes show
         for plot in (self.gyro, self.acc):
             plot.addLegend(offset=(5, 5))
@@ -402,6 +403,10 @@ class ImuPlots:
             for axis, color in zip("xyz", AXIS_COLORS, strict=True):
                 # 1 px: wider lines leave Qt's fast path (1.5 px cost a fifth of a viewer frame)
                 self.curves.append(plot.plot(pen=pg.mkPen(color, width=1), name=axis))
+            cursor = pg.InfiniteLine(0, pen=pg.mkPen(SWEEP_CURSOR_COLOR, width=1))
+            cursor.setVisible(False)
+            plot.addItem(cursor)
+            self.cursors.append(cursor)
 
     def draw(
         self, rel_t: np.ndarray, gyro: np.ndarray, acc: np.ndarray, window_s: float,
@@ -413,10 +418,14 @@ class ImuPlots:
             xs, ys, _ = sweep_points(rel_t + sweep_now, np.hstack([gyro, acc]), window_s)
             for k, c in enumerate(self.curves):
                 c.setData(xs, ys[:, k], connect="finite")
+            for cursor in self.cursors:  # at now, as the EMG's (the IMU's newest lags a little)
+                cursor.setValue(sweep_now % window_s)
         else:
             for k, c in enumerate(self.curves):
                 c.setData(rel_t, gyro[:, k] if k < 3 else acc[:, k - 3], connect="all")
         if self._view != (window_s, sweeping):  # setting the range redraws the axes
             self._view = (window_s, sweeping)
+            for cursor in self.cursors:
+                cursor.setVisible(sweeping)
             for plot in (self.gyro, self.acc):
                 plot.setXRange(*((0, window_s) if sweeping else (-window_s, 0)), padding=0)
