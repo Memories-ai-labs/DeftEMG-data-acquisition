@@ -44,6 +44,7 @@ from deftemg_acquisition.viz.panels import (
     SpectrumPlot,
     auto_spacing,
 )
+from deftemg_acquisition.viz.screen import fit_font
 
 WATCHDOG_MS = 100  # with GPU traces, frames follow the screen (Viewer._frame_shown)
 SLOW_MS = 250  # spectrum and status bar
@@ -368,6 +369,7 @@ def parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace, panels: list[ViewerPanel] | tuple = ()) -> None:
     """Open the viewer for ``parser()``'s ``args`` and run until it is closed."""
     app = pg.mkQApp("EMG viewer")
+    fit_font(app)  # before any window
     viewer = Viewer(
         args.window,
         args.spectrum_seconds,

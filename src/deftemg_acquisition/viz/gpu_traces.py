@@ -36,6 +36,7 @@ from deftemg_acquisition.viz.panels import (
     _columns,
     marker_place,
 )
+from deftemg_acquisition.viz.screen import font_points, font_px
 
 log = logging.getLogger(__name__)
 
@@ -142,6 +143,9 @@ class _TraceView(QtWidgets.QWidget):
 
     def __init__(self):
         super().__init__()
+        # margins for the text around the plot area, as large as the text (fit_font)
+        self.LEFT, self.RIGHT = font_px(_TraceView.LEFT), _TraceView.RIGHT
+        self.TOP, self.BOTTOM = font_px(_TraceView.TOP), font_px(_TraceView.BOTTOM)
         n = len(CHANNEL_COLORS)
         self.markers: list[tuple[float, _Marker]] = []  # (time, line), caller's timeline
         self.spacing = 300.0
@@ -286,13 +290,17 @@ class _TraceView(QtWidgets.QWidget):
 
         dim = QtGui.QColor(self._foreground)
         font = p.font()
-        font.setPointSizeF(9)
+        font.setPointSizeF(font_points(9))
         p.setFont(font)
         fm = QtGui.QFontMetricsF(font)
 
-        # Title
+        # Title, as large as the other plots' (panels.text_style)
+        title_font = QtGui.QFont(font)
+        title_font.setPointSizeF(font_points(11))
+        p.setFont(title_font)
         p.setPen(self._foreground)
         p.drawText(QtCore.QRectF(0, 2, w, self.TOP - 4), QtCore.Qt.AlignCenter, self.TITLE)
+        p.setFont(font)
 
         # Time axis: ticks, labels and grid lines (over the traces, faint)
         step = _tick_step(self.window_s)
@@ -306,7 +314,7 @@ class _TraceView(QtWidgets.QWidget):
             p.setPen(dim)
             p.drawLine(QtCore.QPointF(x, area.bottom()), QtCore.QPointF(x, area.bottom() + 5))
             label = f"{t:g}" if step >= 1 else f"{t:.{max(0, -math.floor(math.log10(step)))}f}"
-            p.drawText(QtCore.QRectF(x - 30, area.bottom() + 5, 60, fm.height()),
+            p.drawText(QtCore.QRectF(x - font_px(30), area.bottom() + 5, font_px(60), fm.height()),
                        QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop, label)  # fmt: skip
             t += step
         axis_label = "time in sweep (s)" if sweeping else "time (s)"

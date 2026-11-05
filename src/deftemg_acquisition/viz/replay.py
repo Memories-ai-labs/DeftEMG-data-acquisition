@@ -43,6 +43,7 @@ from deftemg_acquisition.viz.panels import (
     SpectrumPlot,
     auto_spacing,
 )
+from deftemg_acquisition.viz.screen import fit_font
 
 FRAME_MS = 16
 SPECTRUM_EVERY_S = 0.25
@@ -505,6 +506,7 @@ def run(args: argparse.Namespace, path: Path | None = None, panels=None) -> None
     npz = resolve_trial(path or args.path, args.trial, args.data_dir)
     print(f"Replaying {npz}")
     app = pg.mkQApp("EMG replay")
+    fit_font(app)  # before any window
     data = load_trial(npz)
     if args.arm:
         data.arm = args.arm

@@ -31,6 +31,7 @@ import numpy as np
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from deftemg_acquisition.clock import host_ns
+from deftemg_acquisition.viz.screen import font_points, font_px
 
 from .sequence import DIGITS, LEVELS, Sequence
 
@@ -280,7 +281,8 @@ class PrompterWidget(QtWidgets.QWidget):
 
     def layout_for_size(self) -> Layout:
         meter_h = METER_H if self.show_effort else 0.0
-        return Layout(self.width(), self.height(), self.hand, self.lookahead_s, meter_h=meter_h)
+        return Layout(self.width(), self.height(), self.hand, self.lookahead_s,
+                      header_h=font_px(48), meter_h=meter_h)  # fmt: skip
 
     def _hand(self, lay: Layout) -> tuple[QtGui.QPainterPath, QtGui.QPainterPath]:
         """Hand paths, rebuilt only when the size or hand changes (path unions are slow)."""
@@ -386,7 +388,7 @@ class PrompterWidget(QtWidgets.QWidget):
         # Text
         p.setPen(_qcolor(FOREGROUND))
         font = p.font()
-        font.setPointSizeF(13)
+        font.setPointSizeF(font_points(13))
         p.setFont(font)
         p.drawText(QtCore.QRectF(16, 0, self.width() - 32, lay.header_h),
                    QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft, self.header)  # fmt: skip
@@ -394,7 +396,7 @@ class PrompterWidget(QtWidgets.QWidget):
             area = QtCore.QRectF(56, lay.header_h, self.width() - 112, lay.target_y - lay.header_h)
             flags = QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap
             for size in range(20, 9, -1):  # smaller text until it fits a small window
-                font.setPointSizeF(size)
+                font.setPointSizeF(font_points(size))
                 p.setFont(font)
                 text = p.boundingRect(area, flags, self.message)  # the backdrop fits the text
                 if text.height() <= area.height() and text.width() <= area.width():
@@ -455,11 +457,11 @@ class PrompterWidget(QtWidgets.QWidget):
             p.setPen(QtGui.QPen(_qcolor(FOREGROUND), 2))
             p.drawRect(QtCore.QRectF(x0 + lo * w, bar.top() - 1, (hi - lo) * w, bar.height() + 2))
         font = p.font()
-        font.setPointSizeF(9)
+        font.setPointSizeF(font_points(9))
         p.setFont(font)
         p.setPen(_qcolor(FOREGROUND, 200))
         for lv, (lo, hi) in self.effort_zones.items():
-            p.drawText(QtCore.QRectF(x0 + lo * w, bar.bottom() + 3, (hi - lo) * w, 14),
+            p.drawText(QtCore.QRectF(x0 + lo * w, bar.bottom() + 3, (hi - lo) * w, font_px(14)),
                        QtCore.Qt.AlignCenter, lv)  # fmt: skip
         p.restore()
 

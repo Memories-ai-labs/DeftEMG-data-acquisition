@@ -24,6 +24,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from deftemg_acquisition.acquisition.protocol import BAND_SLOTS, N_EMG_CHANNELS
+from deftemg_acquisition.viz.screen import font_points, font_px
 
 PUCK_DEG = 90.0  # puck at the top (dorsal), angles counterclockwise from the right (screen)
 POD_STEP_DEG = 360.0 / BAND_SLOTS
@@ -112,7 +113,7 @@ class BandRmsWidget(QtWidgets.QWidget):
         """Where everything goes, for the widget's size."""
         w, h = self.width(), self.height()
         # Layout: two title lines, puck above the ring, side labels left/right, legend below.
-        title_h, legend_h, side_w = 34, 18, 52
+        title_h, legend_h, side_w = font_px(34), font_px(18), font_px(52)  # room for text
         avail_w = w - 2 * side_w
         avail_h = h - title_h - legend_h
         # ring + pod labels take ~1.45 rx sideways and the puck adds ~0.55 rx on top
@@ -155,14 +156,15 @@ class BandRmsWidget(QtWidgets.QWidget):
         p.drawLine(self._point(cx, cy, rx, ry, op, 0.9), self._point(cx, cy, rx, ry, op, 1.16))
 
         # Electrode numbers, just outside the ring
-        font.setPointSizeF(max(7.0, min(10.0, pod_r * 0.9)))
+        font.setPointSizeF(max(font_points(7), min(font_points(10), pod_r * 0.9)))
         p.setFont(font)
         p.setPen(fg)
         for i, th in enumerate(self._angles):
             c = self._point(cx, cy, rx, ry, th)
             off = pod_r * 2.1
             lab = QtCore.QPointF(c.x() + off * math.cos(th), c.y() - off * math.sin(th))
-            box = QtCore.QRectF(lab.x() - 11, lab.y() - 7, 22, 14)
+            bw, bh = font_px(22), font_px(14)
+            box = QtCore.QRectF(lab.x() - bw / 2, lab.y() - bh / 2, bw, bh)
             p.drawText(box, QtCore.Qt.AlignCenter, str(i + 1))
 
         # Puck: above the ring and its numbers, joined to the band between ch9 and ch10
@@ -176,30 +178,33 @@ class BandRmsWidget(QtWidgets.QWidget):
         p.drawText(puck, QtCore.Qt.AlignCenter, "puck")
 
         # Anatomical sides
-        font.setPointSizeF(9)
+        font.setPointSizeF(font_points(9))
         p.setFont(font)
         p.setPen(dim)
         sides = side_labels(self.arm)
         two_line = {k: v.replace(" (", "\n(") for k, v in sides.items()}
         p.drawText(
-            QtCore.QRectF(2, cy - 16, side_w - 4, 32), QtCore.Qt.AlignCenter, two_line["left"]
+            QtCore.QRectF(2, cy - font_px(16), side_w - 4, font_px(32)),
+            QtCore.Qt.AlignCenter,
+            two_line["left"],
         )
         p.drawText(
-            QtCore.QRectF(w - side_w + 2, cy - 16, side_w - 4, 32), QtCore.Qt.AlignCenter,
-            two_line["right"],
+            QtCore.QRectF(w - side_w + 2, cy - font_px(16), side_w - 4, font_px(32)),
+            QtCore.Qt.AlignCenter, two_line["right"],
         )  # fmt: skip
         below = cy + ry + pod_r * 3.0
-        p.drawText(QtCore.QRectF(0, below, w, 16), QtCore.Qt.AlignHCenter, sides["bottom"])
+        p.drawText(QtCore.QRectF(0, below, w, font_px(16)), QtCore.Qt.AlignHCenter, sides["bottom"])
 
         # Title
         p.setPen(fg)
         p.drawText(
-            QtCore.QRectF(6, 2, w - 12, 16), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+            QtCore.QRectF(6, 2, w - 12, font_px(16)), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             f"Band RMS · last {self.window_ms:.0f} ms",
         )  # fmt: skip
         p.setPen(dim)
         p.drawText(
-            QtCore.QRectF(6, 17, w - 12, 16), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+            QtCore.QRectF(6, 2 + font_px(15), w - 12, font_px(16)),
+            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             f"{self.arm} arm, seen from the elbow, {sides['top'].lower()} up",
         )  # fmt: skip
         p.end()
@@ -237,7 +242,7 @@ class BandRmsWidget(QtWidgets.QWidget):
 
         # Legend
         font = p.font()
-        font.setPointSizeF(9)
+        font.setPointSizeF(font_points(9))
         p.setFont(font)
         p.setPen(dim)
         p.drawText(

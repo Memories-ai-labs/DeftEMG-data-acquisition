@@ -11,11 +11,12 @@ from collections.abc import Callable
 
 import numpy as np
 import pyqtgraph as pg
-from pyqtgraph.Qt import QtCore, QtWidgets
+from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.signal import welch
 
 from deftemg_acquisition.acquisition.protocol import EMG_RATE_HZ, N_EMG_CHANNELS
 from deftemg_acquisition.viz.band import AutoScale, BandRmsWidget, band_rms
+from deftemg_acquisition.viz.screen import font_points
 
 EMG_CHANNELS = [f"ch{i}" for i in range(1, N_EMG_CHANNELS + 1)]
 AXIS_COLORS = ["#e15759", "#59a14f", "#4e79a7"]  # x, y, z
@@ -150,6 +151,28 @@ def marker_place(t: float, now: float, sweep: tuple[float, float] | None) -> tup
     return float(t % window_s), bool(newest - window_s < t <= newest)
 
 
+def text_style(plot) -> None:
+    """pyqtgraph's own text at the sizes the rest of the viewer uses, scaled as the application
+    font (``screen.fit_font``): titles 11 pt, axis labels and tick numbers 9 pt (as at the
+    platform's default font). pyqtgraph fixes titles at 11 pt and legends at 9 pt whatever the
+    application font, and draws axis text at the application font."""
+    item = plot.getPlotItem() if hasattr(plot, "getPlotItem") else plot
+    tick = QtGui.QFont(QtWidgets.QApplication.font())
+    tick.setPointSizeF(font_points(9))
+    for name in ("left", "bottom", "right", "top"):
+        axis = item.getAxis(name)
+        axis.setStyle(tickFont=tick)
+        axis.labelStyle = {**axis.labelStyle, "font-size": f"{font_points(9):.1f}pt"}
+        axis._updateLabel()
+    if item.titleLabel.text:
+        item.setTitle(item.titleLabel.text, size=f"{font_points(11):.1f}pt")
+
+
+def legend_text_size() -> str:
+    """Legend text, as ``text_style``'s axis text (pass to ``addLegend``)."""
+    return f"{font_points(9):.1f}pt"
+
+
 def auto_spacing(x: np.ndarray) -> float:
     """Trace spacing that fits the typical channel's peaks (99.5th pct of |x|) in its lane."""
     if not len(x):
@@ -268,6 +291,7 @@ class TracePlot(pg.PlotWidget):
     def __init__(self):
         super().__init__(title="EMG (µV)")
         self.setLabel("bottom", "time (s)")
+        text_style(self)
         self.showGrid(x=True, alpha=0.2)
         self.getAxis("left").setWidth(44)  # room for "ch18"; labels that don't fit are dropped
         self.curves = []
@@ -360,6 +384,7 @@ class SpectrumPlot(pg.PlotWidget):
         super().__init__(title="EMG spectrum (µV²/Hz)")
         self.setLogMode(y=True)
         self.setLabel("bottom", "frequency (Hz)")
+        text_style(self)
         self.showGrid(x=True, y=True, alpha=0.2)
         self.setXRange(0, EMG_RATE_HZ / 2)
         for f in (60, 120, 180):
@@ -398,7 +423,8 @@ class ImuPlots:
         self.cursors = []  # the sweep's cursor in each plot, as on the EMG traces
         self._view: tuple[float, bool] | None = None  # (window_s, sweeping) the axes show
         for plot in (self.gyro, self.acc):
-            plot.addLegend(offset=(5, 5))
+            plot.addLegend(offset=(5, 5), labelTextSize=legend_text_size())
+            text_style(plot)
             plot.showGrid(x=True, y=True, alpha=0.2)
             for axis, color in zip("xyz", AXIS_COLORS, strict=True):
                 # 1 px: wider lines leave Qt's fast path (1.5 px cost a fifth of a viewer frame)

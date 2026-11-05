@@ -55,6 +55,7 @@ from deftemg_acquisition.tasks.app import TaskPlugin, TaskWindow
 from deftemg_acquisition.tasks.effort import ZONES
 from deftemg_acquisition.tasks.prompter import DEFAULT_LOOKAHEAD_S
 from deftemg_acquisition.tasks.sequence import CALIBRATION_REPS, Sequence, calibration_for
+from deftemg_acquisition.viz.screen import fit_font
 
 
 def expand(paths: list[Path]) -> list[Path]:
@@ -246,7 +247,7 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
     elif viewer_args is not None:  # side by side: the prompter on the left, the viewer right
         from deftemg_acquisition.viz.screen import geometry_args, snap, split_screen
 
-        pg.mkQApp("Prompter")
+        fit_font(pg.mkQApp("Prompter"))
         left, right = split_screen()
         viewer = subprocess.Popen(
             [sys.executable, "-m", ext.viewer_module, "--arm", args.hand, *viewer_args,
@@ -256,6 +257,7 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
         with AcquisitionSession(config, device=device) as session:
             print(f"Saving to {session.session_dir}")
             app = pg.mkQApp("Prompter")
+            fit_font(app)  # before any window (once: kept if already done)
             win = TaskWindow(
                 session,
                 sequences,
