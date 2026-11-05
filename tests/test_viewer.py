@@ -98,3 +98,56 @@ def test_band_rms_background_is_drawn_once_per_size():
     w.set_rms(np.linspace(90, 5, 18), 60.0, 300)  # the title changes
     w.render(img)
     assert w._background_cache is not cached
+
+
+def test_trace_plot_falls_back_to_the_cpu_without_a_gpu(monkeypatch):
+    """Headless (tests, CI) or with VIEWER_GPU=0, the traces are TracePlot, drawn by the CPU."""
+    import pyqtgraph as pg
+
+    from deftemg_acquisition.viz import gpu_traces
+    from deftemg_acquisition.viz.panels import TracePlot
+
+    pg.mkQApp()
+    ok, why = gpu_traces._check()
+    assert not ok and "offscreen" in why
+    assert type(gpu_traces.make_trace_plot()) is TracePlot
+    monkeypatch.setenv("VIEWER_GPU", "0")
+    assert gpu_traces._check() == (False, "VIEWER_GPU=0")
+
+
+def test_gpu_trace_plot_draws_traces_axes_and_markers():
+    """GpuTracePlot's picture (its paint(), drawn here into an image by the CPU): every
+    channel's trace in its colour, and a marker only once it is reached."""
+    import numpy as np
+    import pyqtgraph as pg
+    from pyqtgraph.Qt import QtGui
+
+    from deftemg_acquisition.viz.gpu_traces import GpuTracePlot, _tick_step
+    from deftemg_acquisition.viz.panels import CHANNEL_COLORS
+
+    assert [_tick_step(w) for w in (0.5, 2.0, 5.0, 10.0, 30.0)] == [0.1, 0.5, 1, 2, 5]
+    pg.mkQApp()
+    plot = GpuTracePlot()
+    t = np.arange(-10_000, 0) / 2000.0
+    x = np.random.default_rng(0).standard_normal((len(t), 18)).astype(np.float32) * 20
+    plot.draw(t, x, spacing=300.0, window_s=5.0, remove_offset=True)
+    plot.add_marker(0.0, "trial 1", "#59a14f")
+    plot.add_marker(1.0, "later", "#e15759")
+    plot.place_markers(now=0.5)
+    assert [m.isVisible() for _, m in plot.markers] == [True, False]
+
+    w, h = 800, 900
+    img = QtGui.QImage(w, h, QtGui.QImage.Format_ARGB32)
+    p = QtGui.QPainter(img)
+    plot.paint(p, w, h)
+    p.end()
+    area_h = h - plot.TOP - plot.BOTTOM
+    for i, color in enumerate(CHANNEL_COLORS):  # each trace's lane holds its colour
+        y = int(plot.TOP + (0.5 + i) * area_h / 18)
+        want = QtGui.QColor(color).getRgb()[:3]
+        row = {img.pixelColor(x, yy).getRgb()[:3] for x in range(plot.LEFT + 5, w - 20, 7)
+               for yy in range(y - 3, y + 4)}  # fmt: skip
+        assert want in row, f"ch{i + 1}"
+    x_marker = int(plot.LEFT + (0.0 - 0.5 + 5.0) / 5.0 * (w - plot.LEFT - plot.RIGHT))
+    col = {img.pixelColor(xx, h // 2).getRgb()[:3] for xx in range(x_marker - 2, x_marker + 3)}
+    assert (0x59, 0xA1, 0x4F) in col  # the reached marker's line

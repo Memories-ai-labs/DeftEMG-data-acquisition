@@ -33,17 +33,18 @@ from deftemg_acquisition.acquisition.live import (
     MARKER_STREAM_TYPE,
     STREAM_PREFIX,
 )
+from deftemg_acquisition.viz.gpu_traces import GpuTracePlot, make_trace_plot
 from deftemg_acquisition.viz.panels import (
     MAX_WINDOW_S,
     BandRms,
     DisplayControls,
     ImuPlots,
     SpectrumPlot,
-    TracePlot,
     auto_spacing,
 )
 
-FRAME_MS = 33  # traces and IMU redraw
+FRAME_MS = 33  # traces and IMU redraw, with the traces drawn by the CPU (TracePlot)
+GPU_FRAME_MS = 16  # ... and by the GPU (GpuTracePlot): ~60 fps, the screen's rate
 SLOW_MS = 250  # spectrum and status bar
 
 
@@ -149,7 +150,7 @@ class Viewer(QtWidgets.QMainWindow):
         self.controls = DisplayControls(window_s, self.auto_spacing, rows=2 if beside else 1,
                                         spectrum=not compact)  # fmt: skip
         self.status = QtWidgets.QLabel()
-        self.traces = TracePlot()
+        self.traces = make_trace_plot()  # drawn by the GPU when there is one
         self.band = BandRms(arm, self.controls)
         self.spectrum = None if compact else SpectrumPlot()
         self.imu_plots = None if compact else ImuPlots()
@@ -181,7 +182,8 @@ class Viewer(QtWidgets.QMainWindow):
         self.setCentralWidget(central)
         self.resize(1400, 900)
 
-        self._timers = [QtCore.QTimer(self, timeout=self.update_plots, interval=FRAME_MS)]
+        frame_ms = GPU_FRAME_MS if isinstance(self.traces, GpuTracePlot) else FRAME_MS
+        self._timers = [QtCore.QTimer(self, timeout=self.update_plots, interval=frame_ms)]
         # Frames on time: a coarse timer may fire up to 5% late, uneven scrolling
         self._timers[0].setTimerType(QtCore.Qt.PreciseTimer)
         if not compact:

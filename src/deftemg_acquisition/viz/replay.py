@@ -35,12 +35,12 @@ from deftemg_acquisition.data import trials
 from deftemg_acquisition.tasks.effort import ZONES
 from deftemg_acquisition.tasks.prompter import DEFAULT_LOOKAHEAD_S, DIGIT_COLORS, PrompterWidget
 from deftemg_acquisition.tasks.sequence import Prompt, Sequence
+from deftemg_acquisition.viz.gpu_traces import make_trace_plot
 from deftemg_acquisition.viz.panels import (
     BandRms,
     DisplayControls,
     ImuPlots,
     SpectrumPlot,
-    TracePlot,
     auto_spacing,
 )
 
@@ -278,7 +278,7 @@ class ReplayWindow(QtWidgets.QMainWindow):
 
         pg.setConfigOptions(antialias=False)
         self.controls = DisplayControls(window_s, self.auto_spacing, pause=False)
-        self.traces = TracePlot()
+        self.traces = make_trace_plot()  # drawn by the GPU when there is one
         self.spectrum = SpectrumPlot()
         self.imu_plots = ImuPlots()
         self.camera = CameraPanel(find_video_sources(data.npz_path))
