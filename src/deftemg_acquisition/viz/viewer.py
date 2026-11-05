@@ -45,7 +45,6 @@ from deftemg_acquisition.viz.panels import (
     auto_spacing,
 )
 
-FRAME_MS = 33  # traces and IMU redraw, with the traces drawn by the CPU (TracePlot)
 WATCHDOG_MS = 100  # with GPU traces, frames follow the screen (Viewer._frame_shown)
 SLOW_MS = 250  # spectrum and status bar
 
@@ -212,9 +211,14 @@ class Viewer(QtWidgets.QMainWindow):
             self.traces.canvas.frameSwapped.connect(self._frame_shown)
             frames = QtCore.QTimer(self, timeout=self._watchdog, interval=WATCHDOG_MS)
         else:
-            frames = QtCore.QTimer(self, timeout=self.update_plots, interval=FRAME_MS)
+            # CPU traces: frames paced to the screen's refresh, each due 1/rate after the last
+            # (a whole-ms interval drifts against the screen as 16 ms does against 60 Hz)
+            self._period = 1.0 / _refresh_rate(self)
+            self._deadline = time.monotonic()
+            frames = QtCore.QTimer(self, timeout=self._paced_frame, singleShot=True)
         # Frames on time: a coarse timer may fire up to 5% late, uneven scrolling
         frames.setTimerType(QtCore.Qt.PreciseTimer)
+        self._closed = False
         self._timers = [frames]
         if not compact:
             self._timers.append(QtCore.QTimer(self, timeout=self.update_slow, interval=SLOW_MS))
@@ -223,9 +227,22 @@ class Viewer(QtWidgets.QMainWindow):
 
     def closeEvent(self, event) -> None:
         """A closed viewer stops reading its streams (it may outlive its window, e.g. in tests)."""
+        self._closed = True
         for timer in self._timers:
             timer.stop()
         super().closeEvent(event)
+
+    def _paced_frame(self) -> None:
+        """CPU traces: a frame, and the next one due a refresh period after this one's due
+        time (from now again after a frame that ran late)."""
+        if self._closed:
+            return
+        self.update_plots()
+        now = time.monotonic()
+        self._deadline += self._period
+        if self._deadline < now:
+            self._deadline = now + self._period
+        self._timers[0].start(max(0, round((self._deadline - now) * 1000)))
 
     def _frame_shown(self) -> None:
         """GPU traces: the last frame is on the screen; prepare the next one."""
@@ -233,7 +250,7 @@ class Viewer(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(0, self._next_frame)  # once the swap has returned
 
     def _next_frame(self) -> None:
-        if self._timers[0].isActive():  # not closed
+        if not self._closed:
             self.update_plots()
             self.traces.canvas.update()  # also when paused: keeps the frames coming
 
@@ -319,6 +336,14 @@ class Viewer(QtWidgets.QMainWindow):
         text = f"trial {idx} {label}".strip() if start else f"end {idx}"
         self.traces.add_marker(t, text, color)
         self.trial_text = f"recording trial {idx} {label}".strip() if start else "no trial"
+
+
+def _refresh_rate(widget: QtWidgets.QWidget) -> float:
+    """The refresh rate (Hz) of the screen the widget is on; 60 when it can't be told."""
+    screen = widget.screen() if hasattr(widget, "screen") else None
+    screen = screen or QtWidgets.QApplication.primaryScreen()
+    rate = screen.refreshRate() if screen is not None else 0.0
+    return rate if 20 <= rate <= 360 else 60.0
 
 
 def parser() -> argparse.ArgumentParser:

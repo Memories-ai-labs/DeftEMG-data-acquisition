@@ -118,12 +118,11 @@ def test_trace_plot_falls_back_to_the_cpu_without_a_gpu(monkeypatch):
     import pyqtgraph as pg
 
     from deftemg_acquisition.viz import gpu_traces
-    from deftemg_acquisition.viz.panels import TracePlot
 
     pg.mkQApp()
     ok, why = gpu_traces._check()
     assert not ok and "offscreen" in why
-    assert type(gpu_traces.make_trace_plot()) is TracePlot
+    assert type(gpu_traces.make_trace_plot()) is gpu_traces.CpuTracePlot
     monkeypatch.setenv("VIEWER_GPU", "0")
     assert gpu_traces._check() == (False, "VIEWER_GPU=0")
 
@@ -306,3 +305,57 @@ def test_ring_last_seconds_covers_the_window_from_a_fast_device():
     assert ring.last_seconds(5.0, 208.0)[0][0] > t[-1] - 5.0
     empty = Ring(10, 3)
     assert len(empty.last_seconds(5.0, 208.0)[0]) == 0
+
+
+def test_cpu_traces_redrawing_only_what_changed_match_drawing_it_all():
+    """CpuTracePlot moves its image by whole columns and draws only the newest columns each
+    frame (sweeping: those behind the cursor); after many frames its picture is the one drawn
+    whole from the same data, at 200% scale."""
+    import numpy as np
+    import pyqtgraph as pg
+    from pyqtgraph.Qt import QtGui
+
+    from deftemg_acquisition.viz.gpu_traces import CpuTracePlot
+
+    pg.mkQApp()
+    rng = np.random.default_rng(4)
+    t_all = 300.0 + np.arange(40_000) / 2000.0
+    x_all = (rng.standard_normal((len(t_all), 18)) * 40).astype(np.float32)
+    w, h, dpr = 800, 600, 2.0
+
+    def picture(plot):
+        img = QtGui.QImage(int(w * dpr), int(h * dpr), QtGui.QImage.Format_ARGB32)
+        img.setDevicePixelRatio(dpr)
+        p = QtGui.QPainter(img)
+        plot.paint(p, w, h)
+        p.end()
+        return img
+
+    def frame(plot, end, sweep):
+        now = t_all[end - 1] + 0.003
+        t, x = t_all[end - 10_000 : end], x_all[end - 10_000 : end]
+        plot.draw(t - now, x, 300.0, 5.0, True, sweep_now=now if sweep else None, now=now)
+
+    for sweep in (False, True):
+        live = CpuTracePlot()
+        live.resize(w, h)
+        live.OFFSET_EVERY_S = 1e9  # one offset throughout, as within a second live
+        end = 12_000
+        for step in [33, 34, 33, 3, 67, 33] * 6 + [2, 1, 40, 33]:
+            end += step
+            frame(live, end, sweep)
+            img = picture(live)
+        whole = CpuTracePlot()
+        whole.resize(w, h)
+        whole._offset, whole._offset_t = live._offset, live._offset_t  # the same offset
+        whole.OFFSET_EVERY_S = 1e9
+        frame(whole, end, sweep)
+        ref = picture(whole)
+        left, top = int(whole.LEFT * dpr), int(whole.TOP * dpr)
+        right, bottom = int((w - whole.RIGHT) * dpr), int((h - whole.BOTTOM) * dpr)
+        cursor = int((whole.LEFT + whole._cursor / 5.0 * (w - whole.LEFT - whole.RIGHT)) * dpr)
+        bad = [
+            (x, y) for x in range(left, right, 1) for y in range(top, bottom, 3)
+            if img.pixel(x, y) != ref.pixel(x, y) and not (sweep and abs(x - cursor) <= 6)
+        ]  # fmt: skip
+        assert not bad, (sweep, len(bad), bad[:5])
