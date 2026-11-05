@@ -379,3 +379,38 @@ def test_imu_plots_show_the_sweep_cursor():
     assert len(imu.cursors) == 2
     imu.draw(t - now, data, data, 5.0)
     assert not any(c.isVisible() for c in imu.cursors)
+
+
+def test_viewer_opens_fitted_to_the_screen_and_text_follows_its_height(monkeypatch):
+    """The viewer opens at 90% of the screen's available area; its text is a fraction of its
+    height (screen.fit_font): smaller in a shorter window, larger in a taller one, the plots'
+    titles with it; never below the platform's default."""
+    import re
+
+    import pyqtgraph as pg
+    from pyqtgraph.Qt import QtWidgets
+
+    from deftemg_acquisition.viz import screen
+    from deftemg_acquisition.viz.viewer import Viewer
+
+    app = pg.mkQApp()
+    font = QtWidgets.QApplication.font()
+    monkeypatch.setattr(screen, "_font_scale", screen._font_scale)  # restored after
+    monkeypatch.setenv("VIEWER_FONT_FRACTION", "0.05")  # large enough to show on this screen
+    area = app.primaryScreen().availableGeometry()
+    viewer = Viewer(5.0, 2.0)
+    try:
+        assert abs(viewer.width() - int(area.width() * 0.9)) <= 2
+        assert abs(viewer.height() - int(area.height() * 0.9)) <= 2
+        sizes = []
+        for height in (300, 900):
+            viewer.resize(800, height)
+            viewer._refit_text()
+            sizes.append(screen.font_points(1))
+            title = viewer.spectrum.getPlotItem().titleLabel.item.toHtml()
+            size = float(re.findall(r"font-size:([0-9.]+)pt", title)[-1])  # the span's
+            assert abs(size - screen.font_points(11)) < 0.06
+        assert 1.0 <= sizes[0] < sizes[1]
+    finally:
+        viewer.close()
+        QtWidgets.QApplication.setFont(font)

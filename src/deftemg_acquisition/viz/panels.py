@@ -162,15 +162,20 @@ def text_style(plot) -> None:
     for name in ("left", "bottom", "right", "top"):
         axis = item.getAxis(name)
         axis.setStyle(tickFont=tick)
-        axis.labelStyle = {**axis.labelStyle, "font-size": f"{font_points(9):.1f}pt"}
+        axis.labelStyle = {**axis.labelStyle, "font-size": _css_points(9)}
         axis._updateLabel()
     if item.titleLabel.text:
-        item.setTitle(item.titleLabel.text, size=f"{font_points(11):.1f}pt")
+        item.setTitle(item.titleLabel.text, size=_css_points(11))
+
+
+def _css_points(points: float) -> str:
+    """A ``font_points`` size for pyqtgraph's rich text (CSS)."""
+    return f"{font_points(points):.1f}pt"
 
 
 def legend_text_size() -> str:
     """Legend text, as ``text_style``'s axis text (pass to ``addLegend``)."""
-    return f"{font_points(9):.1f}pt"
+    return _css_points(9)
 
 
 def auto_spacing(x: np.ndarray) -> float:

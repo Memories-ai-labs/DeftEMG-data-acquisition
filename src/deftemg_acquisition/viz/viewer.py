@@ -43,8 +43,10 @@ from deftemg_acquisition.viz.panels import (
     ImuPlots,
     SpectrumPlot,
     auto_spacing,
+    legend_text_size,
+    text_style,
 )
-from deftemg_acquisition.viz.screen import fit_font
+from deftemg_acquisition.viz.screen import fit_font, font_points
 
 WATCHDOG_MS = 100  # with GPU traces, frames follow the screen (Viewer._frame_shown)
 SLOW_MS = 250  # spectrum and status bar
@@ -200,7 +202,12 @@ class Viewer(QtWidgets.QMainWindow):
         if not compact:
             layout.addWidget(self.status)
         self.setCentralWidget(central)
-        self.resize(1400, 900)
+        # Open at 90% of the screen's available area, centred (run's --geometry places it
+        # instead); the text follows the window's height as it is resized (_refit_text)
+        area = QtWidgets.QApplication.primaryScreen().availableGeometry()
+        self.resize(int(area.width() * 0.9), int(area.height() * 0.9))
+        self.move(area.center() - self.rect().center())
+        self._refit = QtCore.QTimer(self, singleShot=True, interval=150, timeout=self._refit_text)
 
         # GPU traces: a frame as soon as the last one is on the screen (frameSwapped), so frames
         # follow the screen's refresh; a 16 ms timer against a 60 Hz screen showed a frame
@@ -232,6 +239,27 @@ class Viewer(QtWidgets.QMainWindow):
         for timer in self._timers:
             timer.stop()
         super().closeEvent(event)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._refit.start()  # once the resizing pauses
+
+    def _refit_text(self) -> None:
+        """The text as large as the window is tall (``screen.fit_font``): at full height as
+        when the app started, smaller in a smaller window (never below the platform's
+        default). Plots keep the font they were made with, so they are restyled."""
+        before = font_points(1)
+        if fit_font(height=self.height()) == before:
+            return
+        for plot in self.findChildren(pg.PlotWidget):
+            text_style(plot)
+            legend = plot.getPlotItem().legend
+            if legend is not None:
+                legend.setLabelTextSize(legend_text_size())
+        self.band.widget.update()
+        self.traces.update()
+        if isinstance(self.traces, GpuTracePlot):
+            self.traces.canvas.update()
 
     def _paced_frame(self) -> None:
         """CPU traces: a frame, and the next one due a refresh period after this one's due

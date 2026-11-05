@@ -138,14 +138,29 @@ class _TraceView(QtWidgets.QWidget):
     what ``CpuTracePlot`` needs to draw only what changed."""
 
     TITLE = "EMG (µV)"
-    LEFT, RIGHT, TOP, BOTTOM = 52, 10, 26, 40  # margins around the plot area (px)
+    MARGINS = (52, 10, 26, 40)  # left, right, top, bottom around the plot area (px, default text)
+
+    # The margins hold text: as large as the text is now (fit_font)
+    @property
+    def LEFT(self) -> int:  # noqa: N802
+        return font_px(self.MARGINS[0])
+
+    @property
+    def RIGHT(self) -> int:  # noqa: N802
+        return self.MARGINS[1]
+
+    @property
+    def TOP(self) -> int:  # noqa: N802
+        return font_px(self.MARGINS[2])
+
+    @property
+    def BOTTOM(self) -> int:  # noqa: N802
+        return font_px(self.MARGINS[3])
+
     OFFSET_EVERY_S = 1.0
 
     def __init__(self):
         super().__init__()
-        # margins for the text around the plot area, as large as the text (fit_font)
-        self.LEFT, self.RIGHT = font_px(_TraceView.LEFT), _TraceView.RIGHT
-        self.TOP, self.BOTTOM = font_px(_TraceView.TOP), font_px(_TraceView.BOTTOM)
         n = len(CHANNEL_COLORS)
         self.markers: list[tuple[float, _Marker]] = []  # (time, line), caller's timeline
         self.spacing = 300.0
@@ -422,7 +437,7 @@ class CpuTracePlot(_TraceView):
         col_w = area.width() / self._columns
         sweeping = self._sweep is not None
         key = (w, h, dpr, self.spacing, self.window_s, sweeping, self._offset_version,
-               self._columns)  # fmt: skip
+               self._columns, font_px(100))  # fmt: skip
         whole = (
             self._image is None or key != self._image_key or col_w != 1.0 or self._done is None
             or not len(self._cols)

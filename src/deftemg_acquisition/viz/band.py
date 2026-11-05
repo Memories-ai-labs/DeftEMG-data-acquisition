@@ -129,7 +129,7 @@ class BandRmsWidget(QtWidgets.QWidget):
         """Everything that doesn't change with the RMS, drawn once per size, arm, title and
         pixel ratio: repainting it at every update (30 a second) was most of the panel's cost
         on a large screen. The RMS shape, the electrodes and the legend go over it."""
-        key = (g["w"], g["h"], self.arm, self.window_ms, dpr)
+        key = (g["w"], g["h"], self.arm, self.window_ms, dpr, font_px(100))  # text size too
         if self._background_cache is not None and self._background_cache[0] == key:
             return self._background_cache[1]
         w, h, rx, ry, pod_r, cx, cy = (g[k] for k in ("w", "h", "rx", "ry", "pod_r", "cx", "cy"))

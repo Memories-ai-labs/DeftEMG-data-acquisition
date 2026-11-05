@@ -45,37 +45,48 @@ def geometry_args(frame: QtCore.QRect) -> list[str]:
     return ["--geometry", *(str(v) for v in (frame.x(), frame.y(), frame.width(), frame.height()))]
 
 
-# The application's text: this fraction of the screen's available height (logical px), so it
-# reads the same on a 4K screen at 100% as on a laptop; never smaller than the platform's own.
+# The application's text: this fraction of the height it is fitted to (the screen's available
+# height as an app starts, a window's as it is resized: ``fit_font``), so it reads the same on a
+# 4K screen at 100% as on a laptop; never smaller than the platform's own.
 FONT_FRACTION = 0.011
 _font_scale = 1.0
+_default: tuple[QtGui.QFont, int] | None = None  # the platform's font, and its height in px
 
 
-def fit_font(app: QtWidgets.QApplication | None = None) -> float:
-    """Size the application font from the primary screen, once per run (later calls keep it);
-    returns the factor on the platform's default size, which ``font_points`` applies to the
-    sizes set in code. ``VIEWER_FONT_FRACTION`` overrides ``FONT_FRACTION``. Call right after
-    the QApplication is made, before any window or plot is (graphics items keep the font they
-    were made with)."""
-    global _font_scale
+def fit_font(app: QtWidgets.QApplication | None = None, height: float | None = None) -> float:
+    """Size the application font to ``FONT_FRACTION`` of ``height`` (logical px; by default
+    the primary screen's available height, once per run: later calls without a height keep
+    it), never below the platform's default. Returns the factor on the platform's default,
+    which ``font_points`` / ``font_px`` apply to the sizes set in code. ``VIEWER_FONT_FRACTION``
+    overrides ``FONT_FRACTION``. Call right after the QApplication is made, before any window or
+    plot is; a window fitting its text to its own height (``Viewer``) restyles its plots after
+    (graphics items keep the font they were made with)."""
+    global _default, _font_scale
     if not isinstance(app, QtWidgets.QApplication):  # None, or a stand-in (tests)
         app = QtWidgets.QApplication.instance()
-    if app is None or app.property("fit_font_done"):
+    if app is None:
         return _font_scale
-    app.setProperty("fit_font_done", True)
-    screen = app.primaryScreen()
-    if screen is None:
-        return _font_scale
+    if _default is None:
+        font = QtGui.QFont(app.font())
+        _default = (font, QtGui.QFontInfo(font).pixelSize())
+    if height is None:
+        if app.property("fit_font_done"):
+            return _font_scale
+        app.setProperty("fit_font_done", True)
+        screen = app.primaryScreen()
+        if screen is None:
+            return _font_scale
+        height = screen.availableGeometry().height()
     try:
         fraction = float(os.environ.get("VIEWER_FONT_FRACTION", FONT_FRACTION))
     except ValueError:
         fraction = FONT_FRACTION
-    font = app.font()
-    default_px = QtGui.QFontInfo(font).pixelSize()
-    want_px = round(fraction * screen.availableGeometry().height())
-    if want_px > default_px > 0:
-        _font_scale = want_px / default_px
-        font.setPointSizeF(font.pointSizeF() * _font_scale)
+    base, base_px = _default
+    scale = max(1.0, fraction * height / base_px) if base_px > 0 else 1.0
+    if abs(scale - _font_scale) > 0.02 * _font_scale:  # small changes: kept as is
+        _font_scale = scale
+        font = QtGui.QFont(base)
+        font.setPointSizeF(base.pointSizeF() * scale)
         app.setFont(font)
     return _font_scale
 
