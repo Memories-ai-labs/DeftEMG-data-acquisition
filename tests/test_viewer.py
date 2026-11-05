@@ -255,7 +255,8 @@ def test_traces_draw_sweeping():
     assert QtGui.QColor(CHANNEL_COLORS[0]).getRgb()[:3] in row
 
     viewer = Viewer(5.0, 2.0)
-    assert viewer.controls.sweep_box.parent() is viewer.controls  # offered live
+    assert viewer.controls.scroll_box.parent() is viewer.controls  # offered live
+    assert not viewer.controls.scroll_box.isChecked()  # sweeping by default
     viewer.close()
 
 
@@ -287,3 +288,21 @@ def test_scrolling_moves_in_whole_columns():
             if c in seen:
                 np.testing.assert_array_equal(seen[c], (lo[i], hi[i]))
             seen[c] = (lo[i], hi[i])
+
+
+def test_ring_last_seconds_covers_the_window_from_a_fast_device():
+    """The viewer takes each stream's last window by time: the IMU sends ~217 packets/s, not
+    its nominal 208, and window * 208 rows would leave the sweep 4% short (a gap)."""
+    import numpy as np
+
+    from deftemg_acquisition.viz.viewer import Ring
+
+    ring = Ring(20_000, 3)
+    t = 50.0 + np.arange(5000) / 217.0
+    ring.extend(t, np.zeros((len(t), 3), np.float32))
+    tw, xw = ring.last_seconds(5.0, 208.0)
+    span = tw[-1] - tw[0]
+    assert tw[-1] == t[-1] and 5.0 - 1 / 217 - 1e-9 < span <= 5.0 and len(xw) == len(tw)
+    assert ring.last_seconds(5.0, 208.0)[0][0] > t[-1] - 5.0
+    empty = Ring(10, 3)
+    assert len(empty.last_seconds(5.0, 208.0)[0]) == 0

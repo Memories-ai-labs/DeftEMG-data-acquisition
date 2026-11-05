@@ -167,7 +167,8 @@ class DisplayControls(QtWidgets.QWidget):
     ):  # fmt: skip
         """``rows``: 2 puts the spectrum and RMS settings on a second row (narrow windows);
         ``spectrum``: False leaves out the spectrum's channel choice (no spectrum shown);
-        ``sweep``: offer the sweep display (``sweep_box``; the live viewer)."""
+        ``sweep``: the live viewer's traces sweep, with a box to scroll them instead
+        (``scroll_box``); without it (replay) they scroll."""
         super().__init__()
         self.window_spin = QtWidgets.QDoubleSpinBox(
             minimum=0.5, maximum=MAX_WINDOW_S, value=window_s, singleStep=1.0, suffix=" s"
@@ -181,10 +182,10 @@ class DisplayControls(QtWidgets.QWidget):
         self.offset_box = QtWidgets.QCheckBox("Remove offset", checked=True)
         self.offset_box.setToolTip("Subtract each channel's mean over the visible window")
         self.pause_box = QtWidgets.QCheckBox("Pause")
-        self.sweep_box = QtWidgets.QCheckBox("Sweep")
-        self.sweep_box.setToolTip(
-            "Traces stand still; a cursor sweeps left to right at the newest sample, replacing\n"
-            "the previous sweep (as on a patient monitor), instead of scrolling right to left"
+        self.scroll_box = QtWidgets.QCheckBox("Scroll")
+        self.scroll_box.setToolTip(
+            "Traces scroll right to left, the newest at the right edge, instead of standing\n"
+            "still while a cursor sweeps left to right at the newest sample (the default)"
         )
         self.spec_combo = QtWidgets.QComboBox()
         self.spec_combo.addItems(SPECTRUM_CHOICES)
@@ -212,7 +213,7 @@ class DisplayControls(QtWidgets.QWidget):
         if pause:
             layout.addWidget(self.pause_box)
         if sweep:
-            layout.addWidget(self.sweep_box)
+            layout.addWidget(self.scroll_box)
         if rows == 2:
             layout.addStretch(1)
             layout = QtWidgets.QHBoxLayout()

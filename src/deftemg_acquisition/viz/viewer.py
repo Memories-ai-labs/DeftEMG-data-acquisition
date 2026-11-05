@@ -34,6 +34,7 @@ from deftemg_acquisition.acquisition.live import (
     MARKER_STREAM_TYPE,
     STREAM_PREFIX,
 )
+from deftemg_acquisition.acquisition.protocol import EMG_RATE_HZ, IMU_RATE_HZ
 from deftemg_acquisition.viz.gpu_traces import GpuTracePlot, make_trace_plot
 from deftemg_acquisition.viz.panels import (
     MAX_WINDOW_S,
@@ -63,6 +64,17 @@ class Ring:
         idx = (self.n + np.arange(len(t))) % cap
         self.t[idx], self.x[idx] = t, x
         self.n += len(t)
+
+    def last_seconds(self, seconds: float, rate_hz: float) -> tuple[np.ndarray, np.ndarray]:
+        """The rows of the last ``seconds`` by their timestamps (up to the newest row's).
+        By time, not by ``seconds * rate_hz`` rows: a device running faster than its nominal
+        rate (the IMU sends ~217 packets/s, not 208) would leave the window short, and a sweep
+        would show the shortfall as a gap after its cursor."""
+        t, x = self.latest(int(seconds * rate_hz * 1.25) + 16)
+        if not len(t):
+            return t, x
+        first = np.searchsorted(t, t[-1] - seconds, side="right")
+        return t[first:], x[first:]
 
     def latest(self, n: int | None = None) -> tuple[np.ndarray, np.ndarray]:
         cap = len(self.t)
@@ -141,11 +153,14 @@ class Viewer(QtWidgets.QMainWindow):
         self.setWindowTitle("EMG armband – live")
         self.spectrum_s = spectrum_s
         self.compact = compact
-        emg_cap = int(MAX_WINDOW_S * 2000 * 1.1)
+        # room for the longest window from a device running fast (Ring.last_seconds)
+        emg_cap = int(MAX_WINDOW_S * EMG_RATE_HZ * 1.3)
         self.emg = Inlet(EMG_STREAM_TYPE, len(EMG_CHANNELS), emg_cap)
         self.imu = None
         if not compact:
-            self.imu = Inlet(IMU_STREAM_TYPE, len(IMU_CHANNELS), int(MAX_WINDOW_S * 208 * 1.1))
+            self.imu = Inlet(
+                IMU_STREAM_TYPE, len(IMU_CHANNELS), int(MAX_WINDOW_S * IMU_RATE_HZ * 1.3)
+            )
         self.markers = Inlet(MARKER_STREAM_TYPE, 1, 0, fmt="string")
         self.trial_text = "no trial"
         self._last_counts = (0, 0)
@@ -231,7 +246,7 @@ class Viewer(QtWidgets.QMainWindow):
     # --- updates -----------------------------------------------------------------------------
 
     def auto_spacing(self) -> None:
-        _, x = self.emg.ring.latest(int(self.controls.window_s * 2000))
+        _, x = self.emg.ring.last_seconds(self.controls.window_s, EMG_RATE_HZ)
         self.controls.spacing_spin.setValue(auto_spacing(x))
 
     def update_plots(self) -> None:
@@ -247,14 +262,14 @@ class Viewer(QtWidgets.QMainWindow):
 
         now = pylsl.local_clock()
         win = self.controls.window_s
-        t, x = self.emg.ring.latest(int(win * 2000))
-        sweep_now = now if self.controls.sweep_box.isChecked() else None
+        t, x = self.emg.ring.last_seconds(win, EMG_RATE_HZ)
+        sweep_now = None if self.controls.scroll_box.isChecked() else now
         self.traces.draw(
             t - now, x, self.controls.spacing, win, self.controls.offset_box.isChecked(),
             sweep_now=sweep_now, now=now,
         )  # fmt: skip
         if self.imu is not None:
-            ti, xi = self.imu.ring.latest(int(win * 208))
+            ti, xi = self.imu.ring.last_seconds(win, IMU_RATE_HZ)
             self.imu_plots.draw(ti - now, xi[:, 0:3], xi[:, 3:6], win, sweep_now=sweep_now)
         for pn in self.panels:
             pn.sweep = sweep_now is not None
