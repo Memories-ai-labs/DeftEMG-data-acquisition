@@ -11,6 +11,9 @@ out to sit right of the prompter (the band RMS on the left of the EMG, the contr
 rows); ``--geometry X Y W H``: where its window goes, frame included (``viz.screen``:
 ``prompter --viewer`` puts it on the right of the screen, the prompter on the left).
 
+``--source``: the session to show when several publish (on this computer and others on the
+network), by its ``source_id`` or its computer's host name; without it, one on this computer.
+
 Other code can add panels under the band RMS (``panels``: :class:`ViewerPanel`, e.g. another
 LSL stream) and its own options (``parser`` and ``run``).
 """
@@ -18,6 +21,7 @@ LSL stream) and its own options (``parser`` and ``run``).
 from __future__ import annotations
 
 import argparse
+import socket
 import sys
 import time
 
@@ -85,8 +89,45 @@ class Ring:
         return self.t[idx], self.x[idx]
 
 
+# The session whose streams the viewer reads (``--source``, ``select_source``): its source_id or
+# the host name of the computer it runs on; None: any (one on this computer first). Then the
+# same one (``_chosen``) for every stream, so EMG, IMU, markers and panels all match.
+_source: str | None = None
+_chosen: str | None = None  # the source_id the first stream found came from
+
+
+def select_source(source: str | None) -> None:
+    """Read the streams of ``source`` only (a session's ``source_id``, or a host name); None:
+    any session's. Applies to every :class:`Inlet` not yet connected, made before or after."""
+    global _source, _chosen
+    _source, _chosen = source, None
+
+
+def _pick(found: list[pylsl.StreamInfo]) -> pylsl.StreamInfo | None:
+    """Of the streams ``found`` (one type), the one to read: from the selected session."""
+    global _chosen
+    if _source:
+        found = [s for s in found if _source in (s.source_id(), s.hostname())]
+    if _chosen is not None:
+        found = [s for s in found if s.source_id() == _chosen]
+    if not found:
+        return None
+    here = socket.gethostname()
+    found = sorted(found, key=lambda s: s.hostname() != here)  # this computer's first
+    if _chosen is None:
+        sources = sorted({f"{s.source_id()} on {s.hostname()}" for s in found})
+        if len(sources) > 1:
+            print(f"viewer: streams from {', '.join(sources)}; showing {found[0].source_id()} "
+                  "(--source picks one)", file=sys.stderr)  # fmt: skip
+        _chosen = found[0].source_id()
+    return found[0]
+
+
 class Inlet:
-    """Finds an LSL stream by type in the background and pulls whatever is available."""
+    """Finds an LSL stream by type in the background and pulls whatever is available.
+
+    Of the session given to :func:`select_source` (``--source``); without one, of the first
+    session found (this computer's first), the same one for every inlet."""
 
     def __init__(
         self, stype: str, n_ch: int, capacity: int, fmt: str = "numeric",
@@ -106,10 +147,11 @@ class Inlet:
         """Pull new data into the ring; for string streams return the new (time, value)s."""
         if self.inlet is None:
             found = self._resolver.results()
-            if not found:
+            info = _pick(found) if found else None
+            if info is None:
                 return []
-            self.name = found[0].name()
-            self.inlet = pylsl.StreamInlet(found[0], max_buflen=10, processing_flags=self.flags)
+            self.name = info.name()
+            self.inlet = pylsl.StreamInlet(info, max_buflen=10, processing_flags=self.flags)
         if self.fmt != "numeric":
             samples, ts = self.inlet.pull_chunk(timeout=0.0)
             return [(t, s[0]) for t, s in zip(ts, samples, strict=True)]
@@ -391,6 +433,11 @@ def parser() -> argparse.ArgumentParser:
         "--geometry", type=int, nargs=4, metavar=("X", "Y", "W", "H"),
         help="the window's place on the screen, frame included",
     )  # fmt: skip
+    ap.add_argument(
+        "--source", metavar="SOURCE",
+        help="the session to show, by its source_id or the host name of its computer, when "
+             "several publish (default: one on this computer, else the first found)",
+    )  # fmt: skip
     return ap
 
 
@@ -398,6 +445,7 @@ def run(args: argparse.Namespace, panels: list[ViewerPanel] | tuple = ()) -> Non
     """Open the viewer for ``parser()``'s ``args`` and run until it is closed."""
     app = pg.mkQApp("EMG viewer")
     fit_font(app)  # before any window
+    select_source(getattr(args, "source", None))
     viewer = Viewer(
         args.window,
         args.spectrum_seconds,

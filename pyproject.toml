@@ -44,6 +44,7 @@ make-sequences = "python -m deftemg_acquisition.cli.make_sequences"
 check-timing = "python -m deftemg_acquisition.cli.check_timing"
 filter-emg = "python -m deftemg_acquisition.cli.filter_emg"
 replay = "python -m deftemg_acquisition.viz.replay"
+serve = "python -m deftemg_acquisition.cli.serve"
 make-synthetic = "python -m deftemg_acquisition.cli.make_synthetic"
 
 [tool.pixi.dependencies]

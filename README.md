@@ -13,6 +13,7 @@ This project is independent and is not affiliated with or endorsed by WAVELETECH
 |---|---|
 | `pixi run acquire` | Record trials from the keyboard (`s` start, `e` end, `q` quit) |
 | `pixi run viewer` | Live EMG / IMU / spectrum viewer (or add `--viewer` to `acquire` / `prompter`) |
+| `pixi run serve` | Stream the armband to another computer, which records it with `--remote` |
 | `pixi run make-sequences` | Generate cued finger-press sequences (JSON files) |
 | `pixi run prompter` | Run the scrolling finger-press task while recording |
 | `pixi run check-timing` | Timing report for a recorded session |
@@ -46,6 +47,67 @@ pixi run test
    the port for a few seconds after you plug in; wait before starting a session.
 
 `--port` can be left out when only one USB serial device is connected.
+
+### The armband on another computer
+
+The armband can be plugged into one computer (the *sender*, e.g. a laptop next to the subject)
+and recorded, viewed and used live on another (the *receiver*), over Ethernet:
+
+```bash
+pixi run serve                                  # sender: prints its source_id
+pixi run prompter --remote <source_id> --viewer protocols/demo   # receiver
+pixi run acquire --remote <source_id> --viewer  # or trials from the keyboard
+pixi run viewer --source <source_id>            # or only watch
+```
+
+`serve` opens the armband, sets its filters (`--device-filter`, `--powerline-hz`,
+`--highpass-hz`, as `acquire`) and publishes its streams until Ctrl-C, saving nothing. Besides
+EMG / IMU / Markers it sends the armband's serial bytes unchanged (`Waveletech-Raw`, type
+`ArmbandBytes`), which `--remote` reads (`acquisition.remote.RemoteArmband`): the receiver's
+session records the usual `.bin` + `.npz` trials and publishes its own live streams, as if the
+armband were plugged into it. `acquire` and `prompter` on the sender publish the bytes too, so
+both computers can keep a copy. `--remote` also takes the sender's host name instead of its
+`source_id`.
+
+- **Timing:** each chunk keeps the time it reached the sender's serial port, moved onto the
+  receiver's clock by LSL's clock synchronisation (`time_correction`), so the network's delay
+  and jitter don't bend the EMG timeline. The armband's own clock (`device_time_ms`) is set by
+  the sender from its wall clock: `check-timing`'s USB delay then also holds the difference
+  between the two computers' wall clocks (keep both on network time).
+- **Losses:** each chunk carries its byte offset, so bytes lost in transit (a dropped
+  connection, which LSL re-establishes on its own) are logged and show in the trial as dropped
+  packets. A receiver that falls behind has 60 s of buffer before it loses data.
+- **Filters:** the armband's filter setting is the sender's; the receiver takes it. The
+  receiver's live filters (`--live-highpass`, `--live-notch`) apply to its own streams.
+- **Trials** are the receiver's: the sender streams throughout (no `--per-trial-acq`).
+- **Which session:** the viewer shows one session's streams, by default one on its own
+  computer; `--source` (a `source_id` or host name) picks another. `prompter --viewer` and
+  `acquire --viewer` pass their own.
+
+Measured over loopback (one computer, `serve --simulate` in another process): sender's serial
+read to the receiver's sinks 0.8 ms median, 2.3 ms at the 99th percentile, no bytes lost. A
+wired gigabit link adds well under 1 ms; Wi-Fi works but adds several ms of jitter and the odd
+stall. The byte stream is about 200 kB/s (raw 24-bit EMG, in base64).
+
+**Network.** LSL finds streams by multicast on the local network, then connects over TCP.
+
+- *Through a switch or the office LAN:* nothing to set up, if both computers are on the same
+  subnet and the network passes multicast. Allow incoming connections when macOS asks
+  (System Settings → Network → Firewall).
+- *A direct cable* (or a network without multicast): give both ends a fixed address on the
+  same subnet and list them as known peers, which LSL asks directly. On macOS: System
+  Settings → Network → the Ethernet adapter → Details → TCP/IP → Configure IPv4 Manually,
+  e.g. `10.42.0.2`, subnet mask `255.255.255.0`. On Linux:
+  `nmcli con add type ethernet ifname <interface> con-name armband-link ipv4.method manual
+  ipv4.addresses 10.42.0.1/24`. Then on both, in `~/lsl_api/lsl_api.cfg`:
+
+  ```ini
+  [lab]
+  KnownPeers = {10.42.0.1, 10.42.0.2}
+  ```
+
+  Check with `ping 10.42.0.2` from the receiver, then `pixi run serve --simulate` on the
+  sender and `pixi run viewer --source <sender's host name>` on the receiver.
 
 ## 1. Recording trials from the keyboard
 
@@ -612,7 +674,8 @@ sample was taken.
 ## Layout
 
 - `src/deftemg_acquisition/acquisition/`: serial protocol, armband driver, recorder, session,
-  subject / donning ids, LSL streaming, simulator, recordings replayed as the armband.
+  subject / donning ids, LSL streaming, simulator, recordings replayed as the armband, the
+  armband on another computer (`remote`).
 - `src/deftemg_acquisition/viz/`: live viewer, replay, the plot panels they share, and window
   placement.
 - `src/deftemg_acquisition/tasks/`: prompt sequences, prompter drawing, task window, effort
@@ -621,7 +684,7 @@ sample was taken.
 - `src/deftemg_acquisition/data/`: trial loading, labels, press timing, calibration,
   synthetic sessions.
 - `src/deftemg_acquisition/cli/`: command-line entry points (`acquire`, `prompter`,
-  `make_sequences`, `check_timing`, `filter_emg`, `make_synthetic`).
+  `make_sequences`, `check_timing`, `filter_emg`, `make_synthetic`, `serve`).
 - `protocols/`: prompt sequence files.
 - `examples/`: a synthetic example session.
 - `tests/`: pytest tests (no hardware needed).
