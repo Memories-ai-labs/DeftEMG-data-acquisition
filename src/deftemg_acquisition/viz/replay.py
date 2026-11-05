@@ -372,7 +372,9 @@ class ReplayWindow(QtWidgets.QMainWindow):
             self.controls.spec_combo.currentIndexChanged,
         ):
             sig.connect(lambda *_: self.render(force_spectrum=True))
-        QtCore.QTimer(self, timeout=self._tick, interval=FRAME_MS).start()
+        frames = QtCore.QTimer(self, timeout=self._tick, interval=FRAME_MS)
+        frames.setTimerType(QtCore.Qt.PreciseTimer)  # frames on time: even scrolling
+        frames.start()
         self.render(force_spectrum=True)
         if autoplay:
             self.toggle_play()

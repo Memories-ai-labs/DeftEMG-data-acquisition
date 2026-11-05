@@ -259,7 +259,8 @@ class ImuPlots:
             plot.addLegend(offset=(5, 5))
             plot.showGrid(x=True, y=True, alpha=0.2)
             for axis, color in zip("xyz", AXIS_COLORS, strict=True):
-                self.curves.append(plot.plot(pen=pg.mkPen(color, width=1.5), name=axis))
+                # 1 px: wider lines leave Qt's fast path (1.5 px cost a fifth of a viewer frame)
+                self.curves.append(plot.plot(pen=pg.mkPen(color, width=1), name=axis))
 
     def draw(self, rel_t: np.ndarray, gyro: np.ndarray, acc: np.ndarray, window_s: float) -> None:
         for k, c in enumerate(self.curves):

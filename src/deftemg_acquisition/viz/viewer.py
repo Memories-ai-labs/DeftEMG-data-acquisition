@@ -182,6 +182,8 @@ class Viewer(QtWidgets.QMainWindow):
         self.resize(1400, 900)
 
         self._timers = [QtCore.QTimer(self, timeout=self.update_plots, interval=FRAME_MS)]
+        # Frames on time: a coarse timer may fire up to 5% late, uneven scrolling
+        self._timers[0].setTimerType(QtCore.Qt.PreciseTimer)
         if not compact:
             self._timers.append(QtCore.QTimer(self, timeout=self.update_slow, interval=SLOW_MS))
         for timer in self._timers:
