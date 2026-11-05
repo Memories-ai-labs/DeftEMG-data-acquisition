@@ -67,6 +67,64 @@ def peak_envelope(
     return tt.reshape(-1), env.reshape(-1, x.shape[1])
 
 
+SWEEP_GAP = 0.04  # share of a sweep cleared just ahead of its cursor
+SWEEP_CURSOR_COLOR = "#f0f0f0"
+
+
+def _break_at_wrap(xs: np.ndarray, ys: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """A NaN row where ``xs`` jumps back (the sweep's wrap), so the line isn't drawn across."""
+    wrap = np.flatnonzero(np.diff(xs) < 0)
+    if len(wrap):
+        i = wrap[0] + 1
+        xs = np.insert(xs, i, np.nan)
+        ys = np.insert(ys.astype(np.float32, copy=False), i, np.nan, axis=0)
+    return xs, ys
+
+
+def sweep_points(t: np.ndarray, x: np.ndarray, window_s: float, gap: float = SWEEP_GAP):
+    """A sweep display of ``x`` (n, channels) at times ``t`` (s, any clock): the screen holds
+    ``window_s``, each sample at ``t mod window_s``, and a cursor at the newest sample moves
+    left to right, replacing the previous sweep as it goes, with ``gap`` of the window
+    cleared ahead of it. Returns (x positions, values with a NaN row where the sweep wraps,
+    the cursor's position)."""
+    newest = t[-1]
+    keep = t > newest - window_s * (1 - gap)
+    xs, ys = _break_at_wrap(np.mod(t[keep], window_s), x[keep])
+    return xs, ys, float(newest % window_s)
+
+
+def sweep_envelope(
+    t: np.ndarray, x: np.ndarray, window_s: float, columns: int, gap: float = SWEEP_GAP
+):
+    """``sweep_points`` reduced to each column's min and max (as ``peak_envelope``), the
+    columns fixed on the screen and in time (``window_s / columns`` each, by the samples'
+    times, so jitter or lost packets don't move them): a column is drawn once its samples are
+    in, and stays as it is until the sweep comes round again."""
+    newest = t[-1]
+    keep = t > newest - window_s * (1 - gap)
+    t, x = t[keep], x[keep]
+    dt = window_s / max(columns, 1)
+    col = np.floor(t / dt).astype(np.int64)
+    starts = np.flatnonzero(np.r_[True, col[1:] != col[:-1]])
+    lo = np.minimum.reduceat(x, starts, axis=0)
+    hi = np.maximum.reduceat(x, starts, axis=0)
+    left = np.mod(col[starts], columns) * dt
+    xs = np.stack([left + 0.25 * dt, left + 0.75 * dt], axis=1).reshape(-1)
+    env = np.stack([lo, hi], axis=1).reshape(-1, x.shape[1])
+    xs, env = _break_at_wrap(xs, env)
+    return xs, env, float(newest % window_s)
+
+
+def marker_place(t: float, now: float, sweep: tuple[float, float] | None) -> tuple[float, bool]:
+    """Where a marker at time ``t`` goes, and whether it shows: scrolling, at ``t - now``
+    once reached; sweeping (``sweep``: window, newest sample's time), where the sweep drew
+    it, until the sweep clears it."""
+    if sweep is None:
+        return t - now, bool(t <= now)
+    window_s, newest = sweep
+    return float(t % window_s), bool(newest - window_s * (1 - SWEEP_GAP) < t <= newest)
+
+
 def auto_spacing(x: np.ndarray) -> float:
     """Trace spacing that fits the typical channel's peaks (99.5th pct of |x|) in its lane."""
     if not len(x):
@@ -80,10 +138,11 @@ class DisplayControls(QtWidgets.QWidget):
 
     def __init__(
         self, window_s: float, on_auto_spacing: Callable[[], None], pause: bool = True,
-        rows: int = 1, spectrum: bool = True,
+        rows: int = 1, spectrum: bool = True, sweep: bool = False,
     ):  # fmt: skip
         """``rows``: 2 puts the spectrum and RMS settings on a second row (narrow windows);
-        ``spectrum``: False leaves out the spectrum's channel choice (no spectrum shown)."""
+        ``spectrum``: False leaves out the spectrum's channel choice (no spectrum shown);
+        ``sweep``: offer the sweep display (``sweep_box``; the live viewer)."""
         super().__init__()
         self.window_spin = QtWidgets.QDoubleSpinBox(
             minimum=0.5, maximum=MAX_WINDOW_S, value=window_s, singleStep=1.0, suffix=" s"
@@ -97,6 +156,11 @@ class DisplayControls(QtWidgets.QWidget):
         self.offset_box = QtWidgets.QCheckBox("Remove offset", checked=True)
         self.offset_box.setToolTip("Subtract each channel's mean over the visible window")
         self.pause_box = QtWidgets.QCheckBox("Pause")
+        self.sweep_box = QtWidgets.QCheckBox("Sweep")
+        self.sweep_box.setToolTip(
+            "Traces stand still; a cursor sweeps left to right at the newest sample, replacing\n"
+            "the previous sweep (as on a patient monitor), instead of scrolling right to left"
+        )
         self.spec_combo = QtWidgets.QComboBox()
         self.spec_combo.addItems(SPECTRUM_CHOICES)
         self.rms_window_spin = QtWidgets.QSpinBox(
@@ -122,6 +186,8 @@ class DisplayControls(QtWidgets.QWidget):
         layout.addWidget(self.offset_box)
         if pause:
             layout.addWidget(self.pause_box)
+        if sweep:
+            layout.addWidget(self.sweep_box)
         if rows == 2:
             layout.addStretch(1)
             layout = QtWidgets.QHBoxLayout()
@@ -170,7 +236,8 @@ class BandRms:
 
 
 class TracePlot(pg.PlotWidget):
-    """18 stacked EMG channels against time relative to now, plus labelled marker lines."""
+    """18 stacked EMG channels plus labelled marker lines: scrolling (time relative to now,
+    newest at the right) or sweeping (``draw``'s ``sweep_now``: see ``sweep_envelope``)."""
 
     def __init__(self):
         super().__init__(title="EMG (µV)")
@@ -183,37 +250,56 @@ class TracePlot(pg.PlotWidget):
             # channels at once; pyqtgraph's own downsampling and clipping would redo it per curve
             c = self.plot(pen=pg.mkPen(color, width=1))
             self.curves.append(c)
+        self.cursor = pg.InfiniteLine(0, pen=pg.mkPen(SWEEP_CURSOR_COLOR, width=1))
+        self.cursor.setVisible(False)
+        self.addItem(self.cursor)
         self.markers: list[tuple[float, pg.InfiniteLine]] = []  # (time, line), caller's timeline
-        self._view: tuple[float, float] | None = None  # (spacing, window_s) the axes show
+        self._view: tuple | None = None  # (spacing, window_s, sweeping) the axes show
+        self._sweep: tuple[float, float] | None = None  # (window_s, newest sample's time)
         # The window and spacing controls set the view (draw() kept resetting a mouse zoom)
         self.setMouseEnabled(x=False, y=False)
         self.hideButtons()
 
     def draw(
         self, rel_t: np.ndarray, x: np.ndarray, spacing: float, window_s: float,
-        remove_offset: bool, first_index: int = 0,
+        remove_offset: bool, first_index: int = 0, sweep_now: float | None = None,
     ) -> None:  # fmt: skip
-        """``first_index``: the stream position of ``x[0]`` (``peak_envelope``)."""
+        """``first_index``: the stream position of ``x[0]`` (``peak_envelope``).
+        ``sweep_now``: sweep instead of scrolling, ``rel_t + sweep_now`` being the samples'
+        times on a clock of their own (``sweep_envelope``)."""
+        sweeping = sweep_now is not None
+        self._sweep = None
         if len(rel_t):
             if remove_offset:
                 x = x - x.mean(axis=0)
             # one min and max per column of the plot (logical pixels, as pyqtgraph's own
             # downsampling); 1000 before it is laid out
             columns = int(self.getViewBox().width()) or 1000
-            t, env = peak_envelope(rel_t, x, samples_per_column(window_s, columns), first_index)
+            if sweeping:
+                t, env, cursor = sweep_envelope(rel_t + sweep_now, x, window_s, columns)
+                self._sweep = (window_s, float(rel_t[-1] + sweep_now))
+                self.cursor.setValue(cursor)
+            else:
+                k = samples_per_column(window_s, columns)
+                t, env = peak_envelope(rel_t, x, k, first_index)
             env = env - np.arange(len(self.curves)) * spacing
             for i, c in enumerate(self.curves):
-                c.setData(t, env[:, i], skipFiniteCheck=True)
+                if sweeping:  # NaN where the sweep wraps: not joined across the cursor
+                    c.setData(t, env[:, i], connect="finite")
+                else:
+                    c.setData(t, env[:, i], connect="all", skipFiniteCheck=True)
         else:
             for c in self.curves:
                 c.setData([], [])
+        self.cursor.setVisible(self._sweep is not None)
         # Ticks and ranges only when they change: setting them redraws the axes
-        if self._view != (spacing, window_s):
-            self._view = (spacing, window_s)
+        if self._view != (spacing, window_s, sweeping):
+            self._view = (spacing, window_s, sweeping)
             n = len(self.curves)
             self.getAxis("left").setTicks([[(-i * spacing, EMG_CHANNELS[i]) for i in range(n)]])
             self.setYRange(-(n - 0.5) * spacing, 0.5 * spacing, padding=0)
-            self.setXRange(-window_s, 0, padding=0)
+            self.setXRange(*((0, window_s) if sweeping else (-window_s, 0)), padding=0)
+            self.setLabel("bottom", "time in sweep (s)" if sweeping else "time (s)")
 
     def add_marker(self, t: float, text: str, color: str, width: float = 2) -> None:
         """A labelled vertical line at time ``t``, shown once ``now`` reaches it."""
@@ -225,10 +311,12 @@ class TracePlot(pg.PlotWidget):
         self.markers.append((t, line))
 
     def place_markers(self, now: float, keep_s: float | None = None) -> None:
-        """Position markers relative to ``now``; drop those older than ``keep_s``."""
+        """Position markers relative to ``now`` (sweeping: where the sweep drew them, until it
+        clears them); drop those older than ``keep_s``."""
         for t, line in self.markers:
-            line.setValue(t - now)
-            line.setVisible(bool(t <= now))
+            value, visible = marker_place(t, now, self._sweep)
+            line.setValue(value)
+            line.setVisible(visible)
         if keep_s is not None:
             for item in [m for m in self.markers if m[0] < now - keep_s]:
                 self.removeItem(item[1])
@@ -277,6 +365,7 @@ class ImuPlots:
         self.gyro = pg.PlotWidget(title="Gyro (rad/s)")
         self.acc = pg.PlotWidget(title="Accelerometer (m/s²)")
         self.curves = []
+        self._view: tuple[float, bool] | None = None  # (window_s, sweeping) the axes show
         for plot in (self.gyro, self.acc):
             plot.addLegend(offset=(5, 5))
             plot.showGrid(x=True, y=True, alpha=0.2)
@@ -284,8 +373,20 @@ class ImuPlots:
                 # 1 px: wider lines leave Qt's fast path (1.5 px cost a fifth of a viewer frame)
                 self.curves.append(plot.plot(pen=pg.mkPen(color, width=1), name=axis))
 
-    def draw(self, rel_t: np.ndarray, gyro: np.ndarray, acc: np.ndarray, window_s: float) -> None:
-        for k, c in enumerate(self.curves):
-            c.setData(rel_t, gyro[:, k] if k < 3 else acc[:, k - 3])
-        for plot in (self.gyro, self.acc):
-            plot.setXRange(-window_s, 0, padding=0)
+    def draw(
+        self, rel_t: np.ndarray, gyro: np.ndarray, acc: np.ndarray, window_s: float,
+        sweep_now: float | None = None,
+    ) -> None:  # fmt: skip
+        """``sweep_now``: sweep as the EMG traces do (``TracePlot.draw``)."""
+        sweeping = sweep_now is not None and len(rel_t) > 1
+        if sweeping:
+            xs, ys, _ = sweep_points(rel_t + sweep_now, np.hstack([gyro, acc]), window_s)
+            for k, c in enumerate(self.curves):
+                c.setData(xs, ys[:, k], connect="finite")
+        else:
+            for k, c in enumerate(self.curves):
+                c.setData(rel_t, gyro[:, k] if k < 3 else acc[:, k - 3], connect="all")
+        if self._view != (window_s, sweeping):  # setting the range redraws the axes
+            self._view = (window_s, sweeping)
+            for plot in (self.gyro, self.acc):
+                plot.setXRange(*((0, window_s) if sweeping else (-window_s, 0)), padding=0)

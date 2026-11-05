@@ -164,3 +164,96 @@ def test_gpu_trace_plot_draws_traces_axes_and_markers():
     x_marker = int(plot.LEFT + (0.0 - 0.5 + 5.0) / 5.0 * (w - plot.LEFT - plot.RIGHT))
     col = {img.pixelColor(xx, h // 2).getRgb()[:3] for xx in range(x_marker - 2, x_marker + 3)}
     assert (0x59, 0xA1, 0x4F) in col  # the reached marker's line
+
+
+def test_sweep_columns_hold_still_and_break_at_the_cursor():
+    """Sweeping, each column holds a fixed slice of time on a fixed place on the screen:
+    drawn once, unchanged as the cursor moves on, until the next sweep clears it. The line
+    breaks at the cursor (NaN), with a gap cleared ahead of it."""
+    import numpy as np
+
+    from deftemg_acquisition.viz.panels import SWEEP_GAP, marker_place, sweep_envelope
+
+    rng = np.random.default_rng(1)
+    t_all = 100.0 + np.arange(40_000) / 2000.0  # any clock
+    x_all = rng.standard_normal((len(t_all), 18)).astype(np.float32)
+    window, columns = 5.0, 1000
+    dt = window / columns
+    seen = {}
+    end = 20_000
+    for step in (33, 31, 35, 7, 64, 3000):
+        end += step
+        t, x = t_all[end - 10_000 : end], x_all[end - 10_000 : end]
+        xs, env, cursor = sweep_envelope(t, x, window, columns)
+        assert cursor == t[-1] % window
+        # In time order: the last sweep's rest (from a gap ahead of the cursor to the right
+        # edge), a NaN where it wraps, then this sweep (from the left edge to the cursor)
+        brk = np.flatnonzero(np.isnan(xs))
+        assert len(brk) <= 1
+        old, new = (xs[: brk[0]], xs[brk[0] + 1 :]) if len(brk) else (xs[:0], xs)
+        assert new.min() >= 0 and new.max() <= cursor + dt
+        if len(old):
+            assert old.min() >= cursor + SWEEP_GAP * window - dt and old.max() <= window
+        else:  # no wrap: everything kept is this sweep, behind the cursor
+            assert new.min() >= cursor - window * (1 - SWEEP_GAP) - dt
+        # Each column (its min and max): its absolute index (sweep, place on the screen)
+        sweep = int(t[-1] // window)
+        cols = []
+        for part, part_sweep in ((old, sweep - 1), (new, sweep)):
+            cols += [part_sweep * columns + round((left - 0.25 * dt) / dt) for left in part[0::2]]
+        keep = ~np.isnan(xs)
+        lo, hi = env[keep][0::2], env[keep][1::2]
+        assert len(cols) == len(lo)
+        # Whole columns (not the oldest, cut by the gap, nor the newest, still filling) are the
+        # same in every frame that shows them
+        for i, c in enumerate(cols[1:-1], start=1):
+            if c in seen:
+                np.testing.assert_array_equal(seen[c], (lo[i], hi[i]))
+            seen[c] = (lo[i], hi[i])
+    # Markers: drawn where the sweep put them, until it clears them
+    assert marker_place(101.0, 102.0, None) == (-1.0, True)
+    assert marker_place(103.0, 102.0, None)[1] is False
+    newest = 107.3
+    assert marker_place(106.0, newest, (window, newest)) == (106.0 % window, True)
+    assert marker_place(102.4, newest, (window, newest))[1] is False  # overwritten
+    assert marker_place(108.0, newest, (window, newest))[1] is False  # not yet
+
+
+def test_traces_draw_sweeping():
+    """Both traces panels sweep: the CPU one (its curves and cursor) and the GPU one's
+    picture (drawn here into an image), and the live viewer offers the sweep, replay not."""
+    import numpy as np
+    import pyqtgraph as pg
+    from pyqtgraph.Qt import QtGui
+
+    from deftemg_acquisition.viz.gpu_traces import GpuTracePlot
+    from deftemg_acquisition.viz.panels import CHANNEL_COLORS, TracePlot
+    from deftemg_acquisition.viz.viewer import Viewer
+
+    pg.mkQApp()
+    now = 1000.0
+    t = now - np.arange(10_000)[::-1] / 2000.0
+    x = np.random.default_rng(2).standard_normal((len(t), 18)).astype(np.float32) * 20
+    cpu = TracePlot()
+    cpu.resize(800, 900)
+    cpu.draw(t - now, x, 300.0, 5.0, True, sweep_now=now)
+    assert cpu.cursor.isVisible() and cpu.cursor.value() == t[-1] % 5.0
+    xs, _ = cpu.curves[0].getData()
+    assert np.isnan(xs).sum() == 1 and np.nanmin(xs) >= 0 and np.nanmax(xs) <= 5.0
+    cpu.draw(t - now, x, 300.0, 5.0, True)  # back to scrolling
+    assert not cpu.cursor.isVisible()
+
+    gpu = GpuTracePlot()
+    gpu.draw(t - now, x, 300.0, 5.0, True, sweep_now=now)
+    img = QtGui.QImage(800, 900, QtGui.QImage.Format_ARGB32)
+    p = QtGui.QPainter(img)
+    gpu.paint(p, 800, 900)
+    p.end()
+    lane = int(gpu.TOP + 0.5 * (900 - gpu.TOP - gpu.BOTTOM) / 18)
+    row = {img.pixelColor(xx, yy).getRgb()[:3] for xx in range(gpu.LEFT + 5, 780, 5)
+           for yy in range(lane - 3, lane + 4)}  # fmt: skip
+    assert QtGui.QColor(CHANNEL_COLORS[0]).getRgb()[:3] in row
+
+    viewer = Viewer(5.0, 2.0)
+    assert viewer.controls.sweep_box.parent() is viewer.controls  # offered live
+    viewer.close()

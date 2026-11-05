@@ -31,9 +31,12 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from deftemg_acquisition.viz.panels import (
     CHANNEL_COLORS,
     EMG_CHANNELS,
+    SWEEP_CURSOR_COLOR,
     TracePlot,
+    marker_place,
     peak_envelope,
     samples_per_column,
+    sweep_envelope,
 )
 
 log = logging.getLogger(__name__)
@@ -136,9 +139,9 @@ class _TraceCanvas(_QOpenGLWindow or QtGui.QWindow):  # QWindow: never shown (no
 
 
 class GpuTracePlot(QtWidgets.QWidget):
-    """18 stacked EMG channels against time relative to now, plus labelled marker lines, drawn
-    by the GPU; the same calls as ``panels.TracePlot`` (``draw``, ``add_marker``,
-    ``place_markers``, ``markers``)."""
+    """18 stacked EMG channels plus labelled marker lines, scrolling or sweeping, drawn by the
+    GPU; the same calls as ``panels.TracePlot`` (``draw``, ``add_marker``, ``place_markers``,
+    ``markers``)."""
 
     TITLE = "EMG (µV)"
     LEFT, RIGHT, TOP, BOTTOM = 52, 10, 26, 40  # margins around the plot area (px)
@@ -150,12 +153,17 @@ class GpuTracePlot(QtWidgets.QWidget):
         self._x = np.empty((0, len(CHANNEL_COLORS)), np.float32)
         self.spacing = 300.0
         self.window_s = 5.0
+        self._sweep: tuple[float, float] | None = None  # (window_s, newest sample's time)
+        self._cursor = 0.0  # the sweep's cursor (s into the sweep)
         self._background = QtGui.QColor(pg.getConfigOption("background"))
         self._foreground = pg.mkColor(pg.getConfigOption("foreground"))
         self._pens = [QtGui.QPen(QtGui.QColor(c), 1) for c in CHANNEL_COLORS]
         for pen in self._pens:
             pen.setCosmetic(True)
         self.canvas = _TraceCanvas(self)
+        fmt = self.canvas.format()
+        fmt.setSwapInterval(1)  # each frame waits for the screen's refresh (vsync)
+        self.canvas.setFormat(fmt)
         container = QtWidgets.QWidget.createWindowContainer(self.canvas, self)
         container.setMinimumSize(200, 150)
         layout = QtWidgets.QVBoxLayout(self)
@@ -166,15 +174,23 @@ class GpuTracePlot(QtWidgets.QWidget):
 
     def draw(
         self, rel_t: np.ndarray, x: np.ndarray, spacing: float, window_s: float,
-        remove_offset: bool, first_index: int = 0,
+        remove_offset: bool, first_index: int = 0, sweep_now: float | None = None,
     ) -> None:  # fmt: skip
-        """``first_index``: the stream position of ``x[0]`` (``peak_envelope``)."""
+        """As ``TracePlot.draw``: ``first_index`` for scrolling, ``sweep_now`` to sweep."""
         if len(rel_t) and remove_offset:
             x = x - x.mean(axis=0)
         # one min and max per column of the plot (logical pixels, as TracePlot)
         columns = max(1, self.canvas.width() - self.LEFT - self.RIGHT)
-        k = samples_per_column(window_s, columns)
-        self._t, self._x = peak_envelope(rel_t, x, k, first_index) if len(rel_t) else (rel_t, x)
+        self._sweep = None
+        if not len(rel_t):
+            self._t, self._x = rel_t, x
+        elif sweep_now is not None:
+            t_abs = rel_t + sweep_now
+            self._t, self._x, self._cursor = sweep_envelope(t_abs, x, window_s, columns)
+            self._sweep = (window_s, float(rel_t[-1] + sweep_now))
+        else:
+            k = samples_per_column(window_s, columns)
+            self._t, self._x = peak_envelope(rel_t, x, k, first_index)
         self.spacing, self.window_s = spacing, window_s
         self.canvas.update()
 
@@ -183,10 +199,11 @@ class GpuTracePlot(QtWidgets.QWidget):
         self.markers.append((t, _Marker(text, QtGui.QColor(color), width)))
 
     def place_markers(self, now: float, keep_s: float | None = None) -> None:
-        """Position markers relative to ``now``; drop those older than ``keep_s``."""
+        """As ``TracePlot.place_markers``."""
         for t, line in self.markers:
-            line.setValue(t - now)
-            line.setVisible(bool(t <= now))
+            value, visible = marker_place(t, now, self._sweep)
+            line.setValue(value)
+            line.setVisible(visible)
         if keep_s is not None:
             self.markers = [m for m in self.markers if m[0] >= now - keep_s]
         self.canvas.update()
@@ -204,8 +221,11 @@ class GpuTracePlot(QtWidgets.QWidget):
         sx = area.width() / self.window_s
         sy = area.height() / (y_top - y_bottom)
 
-        def px(t):  # time relative to now -> x pixel
-            return area.left() + (t + self.window_s) * sx
+        sweeping = self._sweep is not None
+        x0 = 0.0 if sweeping else -self.window_s  # the window's left edge on the time axis
+
+        def px(t):  # time on the axis (relative to now, or into the sweep) -> x pixel
+            return area.left() + (t - x0) * sx
 
         def py(v):  # µV -> y pixel
             return area.top() + (y_top - v) * sy
@@ -224,8 +244,8 @@ class GpuTracePlot(QtWidgets.QWidget):
         step = _tick_step(self.window_s)
         grid = QtGui.QColor(self._foreground)
         grid.setAlpha(51)  # TracePlot's showGrid(alpha=0.2)
-        t = -math.floor(self.window_s / step) * step
-        while t <= 1e-9:
+        t = 0.0 if sweeping else -math.floor(self.window_s / step) * step
+        while t <= x0 + self.window_s + 1e-9:
             x = px(t)
             p.setPen(QtGui.QPen(grid, 1))
             p.drawLine(QtCore.QPointF(x, area.top()), QtCore.QPointF(x, area.bottom()))
@@ -235,8 +255,9 @@ class GpuTracePlot(QtWidgets.QWidget):
             p.drawText(QtCore.QRectF(x - 30, area.bottom() + 5, 60, fm.height()),
                        QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop, label)  # fmt: skip
             t += step
+        axis_label = "time in sweep (s)" if sweeping else "time (s)"
         p.drawText(QtCore.QRectF(area.left(), h - fm.height() - 2, area.width(), fm.height()),
-                   QtCore.Qt.AlignCenter, "time (s)")  # fmt: skip
+                   QtCore.Qt.AlignCenter, axis_label)  # fmt: skip
         p.setPen(dim)
         p.drawLine(area.bottomLeft(), area.bottomRight())
         p.drawLine(area.topLeft(), area.bottomLeft())
@@ -254,16 +275,27 @@ class GpuTracePlot(QtWidgets.QWidget):
         if len(self._t) > 1:
             xs = px(np.asarray(self._t, np.float64))
             ys = area.top() + (y_top - (self._x - np.arange(n) * self.spacing)) * sy
-            poly = fn.create_qpolygonf(len(xs))
-            arr = fn.ndarray_from_qpolygonf(poly)
-            arr[:, 0] = xs
-            for i, pen in enumerate(self._pens):
-                arr[:, 1] = ys[:, i]
-                p.setPen(pen)
-                p.drawPolyline(poly)
+            # a sweep's two parts (this sweep, the last one's rest) apart at the NaN row
+            breaks = np.flatnonzero(np.isnan(xs))
+            for a, b in zip(np.r_[0, breaks + 1], np.r_[breaks, len(xs)], strict=True):
+                if b - a < 2:
+                    continue
+                poly = fn.create_qpolygonf(int(b - a))
+                arr = fn.ndarray_from_qpolygonf(poly)
+                arr[:, 0] = xs[a:b]
+                for i, pen in enumerate(self._pens):
+                    arr[:, 1] = ys[a:b, i]
+                    p.setPen(pen)
+                    p.drawPolyline(poly)
+        if sweeping:  # the cursor, at the newest sample
+            cursor = QtGui.QPen(QtGui.QColor(SWEEP_CURSOR_COLOR), 1)
+            cursor.setCosmetic(True)
+            p.setPen(cursor)
+            x = px(self._cursor)
+            p.drawLine(QtCore.QPointF(x, area.top()), QtCore.QPointF(x, area.bottom()))
         # Markers: a line and its label near the top, left-aligned at the line
         for _, m in self.markers:
-            if not m.visible or not (-self.window_s <= m.value <= 0):
+            if not m.visible or not (x0 <= m.value <= x0 + self.window_s):
                 continue
             x = px(m.value)
             pen = QtGui.QPen(m.color, m.width)

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 
 import numpy as np
 import pylsl
@@ -44,7 +45,7 @@ from deftemg_acquisition.viz.panels import (
 )
 
 FRAME_MS = 33  # traces and IMU redraw, with the traces drawn by the CPU (TracePlot)
-GPU_FRAME_MS = 16  # ... and by the GPU (GpuTracePlot): ~60 fps, the screen's rate
+WATCHDOG_MS = 100  # with GPU traces, frames follow the screen (Viewer._frame_shown)
 SLOW_MS = 250  # spectrum and status bar
 
 
@@ -148,7 +149,7 @@ class Viewer(QtWidgets.QMainWindow):
 
         pg.setConfigOptions(antialias=False)
         self.controls = DisplayControls(window_s, self.auto_spacing, rows=2 if beside else 1,
-                                        spectrum=not compact)  # fmt: skip
+                                        spectrum=not compact, sweep=True)  # fmt: skip
         self.status = QtWidgets.QLabel()
         self.traces = make_trace_plot()  # drawn by the GPU when there is one
         self.band = BandRms(arm, self.controls)
@@ -182,10 +183,20 @@ class Viewer(QtWidgets.QMainWindow):
         self.setCentralWidget(central)
         self.resize(1400, 900)
 
-        frame_ms = GPU_FRAME_MS if isinstance(self.traces, GpuTracePlot) else FRAME_MS
-        self._timers = [QtCore.QTimer(self, timeout=self.update_plots, interval=frame_ms)]
+        # GPU traces: a frame as soon as the last one is on the screen (frameSwapped), so frames
+        # follow the screen's refresh; a 16 ms timer against a 60 Hz screen showed a frame
+        # twice (or skipped one) every ~25 frames, a visible hitch. The timer then only keeps
+        # the streams read while no frames are shown (window hidden or minimised).
+        self._vsync = isinstance(self.traces, GpuTracePlot)
+        self._last_frame = 0.0
+        if self._vsync:
+            self.traces.canvas.frameSwapped.connect(self._frame_shown)
+            frames = QtCore.QTimer(self, timeout=self._watchdog, interval=WATCHDOG_MS)
+        else:
+            frames = QtCore.QTimer(self, timeout=self.update_plots, interval=FRAME_MS)
         # Frames on time: a coarse timer may fire up to 5% late, uneven scrolling
-        self._timers[0].setTimerType(QtCore.Qt.PreciseTimer)
+        frames.setTimerType(QtCore.Qt.PreciseTimer)
+        self._timers = [frames]
         if not compact:
             self._timers.append(QtCore.QTimer(self, timeout=self.update_slow, interval=SLOW_MS))
         for timer in self._timers:
@@ -196,6 +207,22 @@ class Viewer(QtWidgets.QMainWindow):
         for timer in self._timers:
             timer.stop()
         super().closeEvent(event)
+
+    def _frame_shown(self) -> None:
+        """GPU traces: the last frame is on the screen; prepare the next one."""
+        self._last_frame = time.monotonic()
+        QtCore.QTimer.singleShot(0, self._next_frame)  # once the swap has returned
+
+    def _next_frame(self) -> None:
+        if self._timers[0].isActive():  # not closed
+            self.update_plots()
+            self.traces.canvas.update()  # also when paused: keeps the frames coming
+
+    def _watchdog(self) -> None:
+        """GPU traces: read the streams and restart the frames when none have been shown for a
+        while (the window hidden, or the first frame)."""
+        if time.monotonic() - self._last_frame > WATCHDOG_MS / 1000:
+            self._next_frame()
 
     # --- updates -----------------------------------------------------------------------------
 
@@ -217,13 +244,15 @@ class Viewer(QtWidgets.QMainWindow):
         now = pylsl.local_clock()
         win = self.controls.window_s
         t, x = self.emg.ring.latest(int(win * 2000))
+        sweep_now = now if self.controls.sweep_box.isChecked() else None
         self.traces.draw(
             t - now, x, self.controls.spacing, win, self.controls.offset_box.isChecked(),
             first_index=self.emg.ring.n - len(t),  # columns that keep their samples
+            sweep_now=sweep_now,
         )  # fmt: skip
         if self.imu is not None:
             ti, xi = self.imu.ring.latest(int(win * 208))
-            self.imu_plots.draw(ti - now, xi[:, 0:3], xi[:, 3:6], win)
+            self.imu_plots.draw(ti - now, xi[:, 0:3], xi[:, 3:6], win, sweep_now=sweep_now)
         for pn in self.panels:
             pn.draw(now, win)
         self.traces.place_markers(now, keep_s=MAX_WINDOW_S)
