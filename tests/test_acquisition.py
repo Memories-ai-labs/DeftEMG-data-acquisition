@@ -1,5 +1,6 @@
 import json
 import time
+import uuid
 
 import numpy as np
 import pytest
@@ -124,26 +125,40 @@ def test_session_trial_flow(tmp_path, continuous):
 
 
 def test_live_stream_over_lsl(tmp_path):
+    """The session streams its EMG and its trial markers over LSL. Its own streams, picked by
+    their source_id (unique to this test): another acquisition running on the machine or the
+    network (a recording, a simulated session) publishes streams of the same types and names.
+    Waits for what it expects, up to a timeout, rather than for fixed times."""
     pylsl = pytest.importorskip("pylsl")
     sim = SimulatedArmband()
+    port = f"test-{uuid.uuid4().hex[:8]}"  # the source_id is the device's: unique to this test
     config = SessionConfig(data_dir=tmp_path, session_name="s1", live_stream=True)
-    with AcquisitionSession(config, device=Armband("sim", ser=sim)) as session:
-        emg_info = pylsl.resolve_byprop("type", "EMG", timeout=5)
-        mk_info = pylsl.resolve_byprop("type", "Markers", timeout=5)
-        assert emg_info and mk_info
-        emg = pylsl.StreamInlet(emg_info[0])
-        markers = pylsl.StreamInlet(mk_info[0])
-        emg.open_stream(timeout=5)
-        markers.open_stream(timeout=5)
-        time.sleep(0.2)
+    with AcquisitionSession(config, device=Armband(port, ser=sim)) as session:
+        source = session.live.source_id
+        assert port in source
+
+        def inlet(stype: str):
+            found = pylsl.resolve_bypred(f"type='{stype}' and source_id='{source}'", 1, 5.0)
+            assert found, f"no {stype} stream from {source}"
+            stream = pylsl.StreamInlet(found[0])
+            stream.open_stream(timeout=5)
+            return stream
+
+        emg, markers = inlet("EMG"), inlet("Markers")
+        samples: list = []
+        deadline = time.monotonic() + 5.0
+        while len(samples) < 200 and time.monotonic() < deadline:  # the EMG is flowing
+            samples += emg.pull_chunk(timeout=0.2, max_samples=100_000)[0]
         session.start_trial(label="grip")
-        time.sleep(0.3)
+        while len(samples) < 1000 and time.monotonic() < deadline + 5.0:
+            samples += emg.pull_chunk(timeout=0.2, max_samples=100_000)[0]
         session.end_trial()
-        time.sleep(0.2)
-        samples, _ = emg.pull_chunk(timeout=1.0, max_samples=100_000)
-        got_markers, _ = markers.pull_chunk(timeout=1.0)
-    assert len(samples) > 800 and len(samples[0]) == 18
-    assert [m[0] for m in got_markers] == ["trial_start|1|grip", "trial_end|1"]
+        got: list = []
+        deadline = time.monotonic() + 5.0
+        while len(got) < 2 and time.monotonic() < deadline:
+            got += markers.pull_chunk(timeout=0.2)[0]
+    assert len(samples) >= 1000 and len(samples[0]) == 18
+    assert [m[0] for m in got] == ["trial_start|1|grip", "trial_end|1"]
 
 
 def test_open_when_device_already_stopped(tmp_path):
