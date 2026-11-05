@@ -28,23 +28,43 @@ DEFAULT_RMS_MAX_UV = 100.0  # band RMS at the top of the colour scale (fixed unl
 SPECTRUM_CHOICES = ["Mean of channels", "All channels", *EMG_CHANNELS]
 
 
-def peak_envelope(t: np.ndarray, x: np.ndarray, columns: int) -> tuple[np.ndarray, np.ndarray]:
-    """``x`` (n, channels) against ``t`` reduced to each column's min then max, for all
-    channels at once: what a trace ``columns`` pixels wide can show (pyqtgraph's "peak"
-    downsampling, without its per-curve work). The oldest ``n % k`` samples (k per column)
-    are left out, so the newest stay at the right edge. Unchanged when n < 2 * columns."""
-    n = len(t)
-    k = n // max(columns, 1)
-    if k < 2:
+def samples_per_column(window_s: float, columns: int, rate_hz: float = EMG_RATE_HZ) -> int:
+    """Samples in each column of a trace ``columns`` pixels wide showing ``window_s``: from
+    the window, not from how many samples a frame happens to have, so it holds still."""
+    return max(1, int(window_s * rate_hz) // max(columns, 1))
+
+
+def peak_envelope(
+    t: np.ndarray, x: np.ndarray, per_column: int, first_index: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
+    """``x`` (n, channels) against ``t`` reduced to each column of ``per_column`` samples' min
+    then max, for all channels at once (pyqtgraph's "peak" downsampling, without its
+    per-curve work).
+
+    ``first_index``: the stream position of ``x[0]`` (samples since the stream began).
+    Columns start at multiples of ``per_column`` in the stream, so as the window scrolls each
+    column keeps its samples and its picture; only the newest (still filling, at the right
+    edge) changes. Columns cut at whatever sample a frame starts on would all shift a little
+    every frame, and noisy EMG would shimmer. The oldest partial column is left out.
+    Unchanged when ``per_column`` < 2."""
+    n, k = len(t), per_column
+    if k < 2 or n < 2 * k:
         return t, x
-    m = n // k
-    tb = t[n - m * k :].reshape(m, k)
-    xb = x[n - m * k :].reshape(m, k, x.shape[1])
-    env = np.empty((m, 2, x.shape[1]), x.dtype)
-    xb.min(axis=1, out=env[:, 0])
-    xb.max(axis=1, out=env[:, 1])
-    tt = np.stack([tb[:, 0], tb[:, -1]], axis=1)  # a column's start and end
-    return tt.reshape(-1), env.reshape(2 * m, x.shape[1])
+    skip = -first_index % k  # the oldest partial column
+    m = (n - skip) // k  # whole columns
+    rest = n - skip - m * k  # the newest, still filling
+    end = skip + m * k
+    tb = t[skip:end].reshape(m, k)
+    xb = x[skip:end].reshape(m, k, x.shape[1])
+    env = np.empty((m + (rest > 0), 2, x.shape[1]), x.dtype)
+    xb.min(axis=1, out=env[:m, 0])
+    xb.max(axis=1, out=env[:m, 1])
+    tt = np.empty((m + (rest > 0), 2), t.dtype)
+    tt[:m, 0], tt[:m, 1] = tb[:, 0], tb[:, -1]  # a column's start and end
+    if rest:
+        env[m, 0], env[m, 1] = x[end:].min(axis=0), x[end:].max(axis=0)
+        tt[m] = t[end], t[-1]
+    return tt.reshape(-1), env.reshape(-1, x.shape[1])
 
 
 def auto_spacing(x: np.ndarray) -> float:
@@ -170,15 +190,17 @@ class TracePlot(pg.PlotWidget):
         self.hideButtons()
 
     def draw(
-        self, rel_t: np.ndarray, x: np.ndarray, spacing: float, window_s: float, remove_offset: bool
-    ) -> None:
+        self, rel_t: np.ndarray, x: np.ndarray, spacing: float, window_s: float,
+        remove_offset: bool, first_index: int = 0,
+    ) -> None:  # fmt: skip
+        """``first_index``: the stream position of ``x[0]`` (``peak_envelope``)."""
         if len(rel_t):
             if remove_offset:
                 x = x - x.mean(axis=0)
             # one min and max per column of the plot (logical pixels, as pyqtgraph's own
             # downsampling); 1000 before it is laid out
             columns = int(self.getViewBox().width()) or 1000
-            t, env = peak_envelope(rel_t, x, columns)
+            t, env = peak_envelope(rel_t, x, samples_per_column(window_s, columns), first_index)
             env = env - np.arange(len(self.curves)) * spacing
             for i, c in enumerate(self.curves):
                 c.setData(t, env[:, i], skipFiniteCheck=True)

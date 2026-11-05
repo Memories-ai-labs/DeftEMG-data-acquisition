@@ -58,24 +58,37 @@ def test_split_screen_and_snap():
     w.close()
 
 
-def test_peak_envelope_keeps_each_columns_extremes():
-    """The traces are drawn from each pixel column's min and max, for all channels at once;
-    the newest samples stay at the right edge, and short data is left as it is."""
+def test_peak_envelope_columns_hold_still_as_the_window_scrolls():
+    """The traces are drawn from each column's min and max, for all channels at once. Columns
+    start at fixed stream positions, so as the window scrolls by uneven amounts (as frames
+    do) every whole column it still shows is unchanged: no shimmer. Short data is left as is."""
     import numpy as np
 
-    from deftemg_acquisition.viz.panels import peak_envelope
+    from deftemg_acquisition.viz.panels import peak_envelope, samples_per_column
 
     rng = np.random.default_rng(0)
-    t = np.arange(10_003) / 2000.0
-    x = rng.standard_normal((len(t), 18)).astype(np.float32)
-    tt, env = peak_envelope(t, x, 1000)  # 10 samples a column; the 3 oldest left out
-    assert tt.shape == (2000,) and env.shape == (2000, 18)
-    cols = x[3:].reshape(1000, 10, 18)
-    np.testing.assert_array_equal(env[0::2], cols.min(axis=1))
-    np.testing.assert_array_equal(env[1::2], cols.max(axis=1))
-    assert tt[-1] == t[-1] and tt[0] == t[3] and np.all(np.diff(tt) >= 0)
-    same_t, same_x = peak_envelope(t[:1500], x[:1500], 1000)
-    assert same_t is not None and len(same_t) == 1500 and same_x.shape == (1500, 18)
+    stream = rng.standard_normal((30_000, 18)).astype(np.float32)
+    times = np.arange(len(stream)) / 2000.0
+    k = samples_per_column(5.0, 1000)
+    assert k == 10
+    seen = {}  # column start time -> its (min, max)
+    end = 10_000
+    for step in (31, 33, 32, 29, 35, 7, 64):  # samples between frames
+        end += step
+        first = end - 10_000
+        t, env = peak_envelope(times[first:end], stream[first:end], k, first_index=first)
+        assert np.all(np.diff(t) >= 0) and t[-1] == times[end - 1]  # newest at the right edge
+        starts, lo, hi = t[0::2], env[0::2], env[1::2]
+        for i, t0 in enumerate(starts[:-1]):  # whole columns (the last may still be filling)
+            j = round(t0 * 2000)
+            assert j % k == 0  # on the stream's grid
+            np.testing.assert_array_equal(lo[i], stream[j : j + k].min(axis=0))
+            np.testing.assert_array_equal(hi[i], stream[j : j + k].max(axis=0))
+            if t0 in seen:
+                np.testing.assert_array_equal(seen[t0], (lo[i], hi[i]))
+            seen[t0] = (lo[i], hi[i])
+    same_t, same_x = peak_envelope(times[:15], stream[:15], k)
+    assert len(same_t) == 15 and same_x.shape == (15, 18)
 
 
 def test_band_rms_background_is_drawn_once_per_size():

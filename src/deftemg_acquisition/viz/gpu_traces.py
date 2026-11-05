@@ -33,6 +33,7 @@ from deftemg_acquisition.viz.panels import (
     EMG_CHANNELS,
     TracePlot,
     peak_envelope,
+    samples_per_column,
 )
 
 log = logging.getLogger(__name__)
@@ -164,13 +165,16 @@ class GpuTracePlot(QtWidgets.QWidget):
     # --- the TracePlot calls ---------------------------------------------------------------------
 
     def draw(
-        self, rel_t: np.ndarray, x: np.ndarray, spacing: float, window_s: float, remove_offset: bool
-    ) -> None:
+        self, rel_t: np.ndarray, x: np.ndarray, spacing: float, window_s: float,
+        remove_offset: bool, first_index: int = 0,
+    ) -> None:  # fmt: skip
+        """``first_index``: the stream position of ``x[0]`` (``peak_envelope``)."""
         if len(rel_t) and remove_offset:
             x = x - x.mean(axis=0)
         # one min and max per column of the plot (logical pixels, as TracePlot)
         columns = max(1, self.canvas.width() - self.LEFT - self.RIGHT)
-        self._t, self._x = peak_envelope(rel_t, x, columns) if len(rel_t) else (rel_t, x)
+        k = samples_per_column(window_s, columns)
+        self._t, self._x = peak_envelope(rel_t, x, k, first_index) if len(rel_t) else (rel_t, x)
         self.spacing, self.window_s = spacing, window_s
         self.canvas.update()
 

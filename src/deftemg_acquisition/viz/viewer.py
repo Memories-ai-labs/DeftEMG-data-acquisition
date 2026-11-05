@@ -218,8 +218,9 @@ class Viewer(QtWidgets.QMainWindow):
         win = self.controls.window_s
         t, x = self.emg.ring.latest(int(win * 2000))
         self.traces.draw(
-            t - now, x, self.controls.spacing, win, self.controls.offset_box.isChecked()
-        )
+            t - now, x, self.controls.spacing, win, self.controls.offset_box.isChecked(),
+            first_index=self.emg.ring.n - len(t),  # columns that keep their samples
+        )  # fmt: skip
         if self.imu is not None:
             ti, xi = self.imu.ring.latest(int(win * 208))
             self.imu_plots.draw(ti - now, xi[:, 0:3], xi[:, 3:6], win)
