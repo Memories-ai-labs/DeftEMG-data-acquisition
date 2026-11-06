@@ -24,6 +24,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from deftemg_acquisition.acquisition.protocol import BAND_SLOTS, N_EMG_CHANNELS
+from deftemg_acquisition.viz.screen import font_points, font_px
 
 PUCK_DEG = 90.0  # puck at the top (dorsal), angles counterclockwise from the right (screen)
 POD_STEP_DEG = 360.0 / BAND_SLOTS
@@ -99,6 +100,7 @@ class BandRmsWidget(QtWidgets.QWidget):
         self.window_ms = 200
         self.setMinimumSize(300, 260)
         self._angles = np.radians(channel_angles_deg())
+        self._background_cache: tuple[tuple, QtGui.QPixmap] | None = None
 
     def set_rms(self, rms: np.ndarray, scale_uv: float, window_ms: float) -> None:
         self.rms, self.scale_uv, self.window_ms = rms, max(scale_uv, 1e-6), window_ms
@@ -107,18 +109,11 @@ class BandRmsWidget(QtWidgets.QWidget):
     def _point(self, cx, cy, rx, ry, theta, k=1.0) -> QtCore.QPointF:
         return QtCore.QPointF(cx + k * rx * math.cos(theta), cy - k * ry * math.sin(theta))
 
-    def paintEvent(self, _event) -> None:
-        p = QtGui.QPainter(self)
-        p.setRenderHint(QtGui.QPainter.Antialiasing)
-        p.fillRect(self.rect(), QtGui.QColor(BACKGROUND))
+    def _geometry(self) -> dict:
+        """Where everything goes, for the widget's size."""
         w, h = self.width(), self.height()
-        fg = QtGui.QColor(FOREGROUND)
-        dim = QtGui.QColor(FOREGROUND)
-        dim.setAlpha(150)
-        font = p.font()
-
         # Layout: two title lines, puck above the ring, side labels left/right, legend below.
-        title_h, legend_h, side_w = 34, 18, 52
+        title_h, legend_h, side_w = font_px(34), font_px(18), font_px(52)  # room for text
         avail_w = w - 2 * side_w
         avail_h = h - title_h - legend_h
         # ring + pod labels take ~1.45 rx sideways and the puck adds ~0.55 rx on top
@@ -127,40 +122,49 @@ class BandRmsWidget(QtWidgets.QWidget):
         pod_r = max(4.5, rx * 0.10)
         cx = w / 2
         cy = title_h + rx * 0.55 + ry * 1.45 + (avail_h - (2 * ry * 1.45 + rx * 0.55)) / 2
+        return {"w": w, "h": h, "legend_h": legend_h, "side_w": side_w, "rx": rx, "ry": ry,
+                "pod_r": pod_r, "cx": cx, "cy": cy}  # fmt: skip
+
+    def _background(self, g: dict, dpr: float) -> QtGui.QPixmap:
+        """Everything that doesn't change with the RMS, drawn once per size, arm, title and
+        pixel ratio: repainting it at every update (30 a second) was most of the panel's cost
+        on a large screen. The RMS shape, the electrodes and the legend go over it."""
+        key = (g["w"], g["h"], self.arm, self.window_ms, dpr, font_px(100))  # text size too
+        if self._background_cache is not None and self._background_cache[0] == key:
+            return self._background_cache[1]
+        w, h, rx, ry, pod_r, cx, cy = (g[k] for k in ("w", "h", "rx", "ry", "pod_r", "cx", "cy"))
+        side_w = g["side_w"]
+        image = QtGui.QPixmap(max(1, math.ceil(w * dpr)), max(1, math.ceil(h * dpr)))
+        image.setDevicePixelRatio(dpr)
+        image.fill(QtGui.QColor(BACKGROUND))
+        p = QtGui.QPainter(image)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.setFont(self.font())
+        fg = QtGui.QColor(FOREGROUND)
+        dim = QtGui.QColor(FOREGROUND)
+        dim.setAlpha(150)
+        font = p.font()
 
         # Wrist outline
         p.setPen(QtGui.QPen(dim, 1.5))
         p.setBrush(QtGui.QColor(255, 255, 255, 12))
         p.drawEllipse(QtCore.QPointF(cx, cy), rx * 0.86, ry * 0.86)
 
-        # RMS shape: radius from the centre proportional to RMS (clipped at the scale)
-        level = np.clip(self.rms / self.scale_uv, 0, 1)
-        points = [
-            self._point(cx, cy, rx, ry, th, 0.12 + 0.72 * lv)
-            for th, lv in zip(self._angles, level, strict=True)
-        ]
-        p.setPen(QtGui.QPen(QtGui.QColor(255, 170, 60, 200), 1.5))
-        p.setBrush(QtGui.QColor(255, 140, 40, 70))
-        p.drawPolygon(QtGui.QPolygonF(points))
-
-        # Band opening (between ch18 and ch1)
+        # Band opening (between ch18 and ch1), outside the RMS shape (at most 0.84 of the ring)
         op = math.radians(opening_angle_deg())
         p.setPen(QtGui.QPen(QtGui.QColor("#e15759"), 2, QtCore.Qt.DashLine))
         p.drawLine(self._point(cx, cy, rx, ry, op, 0.9), self._point(cx, cy, rx, ry, op, 1.16))
 
-        # Electrodes, numbered just outside the ring
-        font.setPointSizeF(max(7.0, min(10.0, pod_r * 0.9)))
+        # Electrode numbers, just outside the ring
+        font.setPointSizeF(max(font_points(7), min(font_points(10), pod_r * 0.9)))
         p.setFont(font)
-        for i, (th, lv) in enumerate(zip(self._angles, level, strict=True)):
+        p.setPen(fg)
+        for i, th in enumerate(self._angles):
             c = self._point(cx, cy, rx, ry, th)
-            outline = self.channel_colors[i] if self.channel_colors is not None else fg
-            p.setPen(QtGui.QPen(QtGui.QColor(outline), 2))
-            p.setBrush(COLORMAP.map(float(lv), mode="qcolor"))
-            p.drawEllipse(c, pod_r, pod_r)
             off = pod_r * 2.1
             lab = QtCore.QPointF(c.x() + off * math.cos(th), c.y() - off * math.sin(th))
-            p.setPen(fg)
-            box = QtCore.QRectF(lab.x() - 11, lab.y() - 7, 22, 14)
+            bw, bh = font_px(22), font_px(14)
+            box = QtCore.QRectF(lab.x() - bw / 2, lab.y() - bh / 2, bw, bh)
             p.drawText(box, QtCore.Qt.AlignCenter, str(i + 1))
 
         # Puck: above the ring and its numbers, joined to the band between ch9 and ch10
@@ -174,34 +178,75 @@ class BandRmsWidget(QtWidgets.QWidget):
         p.drawText(puck, QtCore.Qt.AlignCenter, "puck")
 
         # Anatomical sides
-        font.setPointSizeF(9)
+        font.setPointSizeF(font_points(9))
         p.setFont(font)
         p.setPen(dim)
         sides = side_labels(self.arm)
         two_line = {k: v.replace(" (", "\n(") for k, v in sides.items()}
         p.drawText(
-            QtCore.QRectF(2, cy - 16, side_w - 4, 32), QtCore.Qt.AlignCenter, two_line["left"]
+            QtCore.QRectF(2, cy - font_px(16), side_w - 4, font_px(32)),
+            QtCore.Qt.AlignCenter,
+            two_line["left"],
         )
         p.drawText(
-            QtCore.QRectF(w - side_w + 2, cy - 16, side_w - 4, 32), QtCore.Qt.AlignCenter,
-            two_line["right"],
+            QtCore.QRectF(w - side_w + 2, cy - font_px(16), side_w - 4, font_px(32)),
+            QtCore.Qt.AlignCenter, two_line["right"],
         )  # fmt: skip
         below = cy + ry + pod_r * 3.0
-        p.drawText(QtCore.QRectF(0, below, w, 16), QtCore.Qt.AlignHCenter, sides["bottom"])
+        p.drawText(QtCore.QRectF(0, below, w, font_px(16)), QtCore.Qt.AlignHCenter, sides["bottom"])
 
-        # Title and legend
+        # Title
         p.setPen(fg)
         p.drawText(
-            QtCore.QRectF(6, 2, w - 12, 16), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+            QtCore.QRectF(6, 2, w - 12, font_px(16)), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             f"Band RMS · last {self.window_ms:.0f} ms",
         )  # fmt: skip
         p.setPen(dim)
         p.drawText(
-            QtCore.QRectF(6, 17, w - 12, 16), QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+            QtCore.QRectF(6, 2 + font_px(15), w - 12, font_px(16)),
+            QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             f"{self.arm} arm, seen from the elbow, {sides['top'].lower()} up",
         )  # fmt: skip
+        p.end()
+        self._background_cache = (key, image)
+        return image
+
+    def paintEvent(self, _event) -> None:
+        p = QtGui.QPainter(self)
+        g = self._geometry()
+        # The pixel ratio of what is painted into (the window, or an image given to render())
+        p.drawPixmap(0, 0, self._background(g, p.paintEngine().paintDevice().devicePixelRatioF()))
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        w, h, rx, ry, pod_r, cx, cy = (g[k] for k in ("w", "h", "rx", "ry", "pod_r", "cx", "cy"))
+        fg = QtGui.QColor(FOREGROUND)
+        dim = QtGui.QColor(FOREGROUND)
+        dim.setAlpha(150)
+
+        # RMS shape: radius from the centre proportional to RMS (clipped at the scale)
+        level = np.clip(self.rms / self.scale_uv, 0, 1)
+        points = [
+            self._point(cx, cy, rx, ry, th, 0.12 + 0.72 * lv)
+            for th, lv in zip(self._angles, level, strict=True)
+        ]
+        p.setPen(QtGui.QPen(QtGui.QColor(255, 170, 60, 200), 1.5))
+        p.setBrush(QtGui.QColor(255, 140, 40, 70))
+        p.drawPolygon(QtGui.QPolygonF(points))
+
+        # Electrodes, filled by their RMS
+        for i, (th, lv) in enumerate(zip(self._angles, level, strict=True)):
+            c = self._point(cx, cy, rx, ry, th)
+            outline = self.channel_colors[i] if self.channel_colors is not None else fg
+            p.setPen(QtGui.QPen(QtGui.QColor(outline), 2))
+            p.setBrush(COLORMAP.map(float(lv), mode="qcolor"))
+            p.drawEllipse(c, pod_r, pod_r)
+
+        # Legend
+        font = p.font()
+        font.setPointSizeF(font_points(9))
+        p.setFont(font)
+        p.setPen(dim)
         p.drawText(
-            QtCore.QRectF(6, h - legend_h, w - 12, legend_h),
+            QtCore.QRectF(6, h - g["legend_h"], w - 12, g["legend_h"]),
             QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
             f"colour 0–{self.scale_uv:.0f} µV · red dash: band opening",
         )

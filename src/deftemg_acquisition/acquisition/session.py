@@ -52,6 +52,9 @@ class SessionConfig:
     # works between trials. False: StartDataAcq/StopDataAcq around every trial.
     continuous: bool = True
     live_stream: bool = True  # publish over LSL for the viewer (see live.py)
+    # With live_stream, also publish the armband's serial bytes unchanged, for a session on
+    # another computer (remote.RemoteArmband); never for a session that is itself remote
+    raw_stream: bool = True
     session_name: str | None = None  # default: the start time, YYYYMMDD-HHMMSS
     metadata: dict[str, Any] = field(default_factory=dict)  # subject id, arm, notes, ...
 
@@ -103,6 +106,7 @@ class AcquisitionSession:
         self._recorder: TrialRecorder | None = None
         self._pending: dict[str, Any] = {}
         self.live = None
+        self.raw = None  # the serial bytes for other computers (remote.RawStreamer)
         self._caffeinate: subprocess.Popen | None = None
 
     # --- lifecycle ---------------------------------------------------------------------------
@@ -133,12 +137,15 @@ class AcquisitionSession:
                             self.config.powerline_hz,
                         )
                 self.live = LiveStreamer(
-                    f"waveletech:{self.device.port}",
-                    self.filter_status.enabled,
-                    emg_filter=emg_filter,
+                    self.source_id, self.filter_status.enabled, emg_filter=emg_filter
                 )
                 self.live.start()
                 self.device.attach_sink("live", self.live)
+                from .remote import RawStreamer, RemoteArmband
+
+                if self.config.raw_stream and not isinstance(self.device, RemoteArmband):
+                    self.raw = RawStreamer(self.source_id, self.filter_status, self.device.port)
+                    self.device.attach_sink("raw", self.raw)
             if self.config.continuous:
                 self.device.set_timestamp(anchor()["wall_ns"] // 1_000_000)
                 self.device.start_acquisition()
@@ -149,6 +156,7 @@ class AcquisitionSession:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         info = {
             "port": self.device.port,
+            **self.device.describe(),
             "opened_at": datetime.now().isoformat(),
             "filter_status": asdict(self.filter_status),
             "continuous": self.config.continuous,
@@ -157,6 +165,11 @@ class AcquisitionSession:
             "metadata": self.config.metadata,
         }
         (self.session_dir / "session.json").write_text(json.dumps(info, indent=2))
+
+    @property
+    def source_id(self) -> str:
+        """The ``source_id`` of the session's LSL streams (the viewer's ``--source``)."""
+        return source_id_for(self.device.port)
 
     def live_emg_filter(self) -> EmgFilter | None:
         """The causal filter on live EMG (stream, viewer, effort meter), or None when the
@@ -180,6 +193,7 @@ class AcquisitionSession:
             if self.live is not None:
                 self.live.stop()
                 self.live = None
+            self.raw = None
             if self._caffeinate is not None:
                 self._caffeinate.terminate()
                 self._caffeinate = None
@@ -314,6 +328,12 @@ class AcquisitionSession:
                 result.stalled_s,
             )
         return result
+
+
+def source_id_for(port: str | None) -> str:
+    """The LSL ``source_id`` of a session on the armband at ``port`` (an ``Armband``'s port:
+    the serial port, "simulated", "replay", "remote:<source>")."""
+    return f"waveletech:{port}"
 
 
 def _slug(s: str) -> str:

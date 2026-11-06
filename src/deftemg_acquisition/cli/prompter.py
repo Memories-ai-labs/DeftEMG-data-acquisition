@@ -2,6 +2,7 @@
 
     pixi run prompter --port /dev/cu.usbmodem1101 --subject S01 --viewer protocols/demo
     pixi run prompter --simulate protocols/demo/d2_multi_b01.json
+    pixi run prompter --remote <source_id or host> --viewer protocols/demo   # see below
 
 Sequences are JSON files from ``make-sequences``; directories are expanded (sorted by name).
 Keys in the prompter window: Shift start block, Enter end early, Left/Right choose block,
@@ -36,6 +37,10 @@ right. ``--no-stream`` opens no viewer (it reads the LSL stream).
 (``acquisition.replay``), for trying a setup without hardware: it plays once, from when the
 prompter opens, and the replayed EMG doesn't follow the prompts on screen.
 
+``--remote SOURCE`` takes the armband plugged into another computer (``pixi run serve`` there;
+``acquisition.remote``): its stream's ``source_id`` or that computer's host name. The session is
+recorded here as with the armband plugged in, with the other computer's filter setting.
+
 Other code can add options, task window plugins and viewer options (``main``'s ``extension``:
 :class:`PrompterExtension`).
 """
@@ -51,10 +56,12 @@ from pathlib import Path
 import pyqtgraph as pg
 
 from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig, subjects
+from deftemg_acquisition.acquisition.session import source_id_for
 from deftemg_acquisition.tasks.app import TaskPlugin, TaskWindow
 from deftemg_acquisition.tasks.effort import ZONES
 from deftemg_acquisition.tasks.prompter import DEFAULT_LOOKAHEAD_S
 from deftemg_acquisition.tasks.sequence import CALIBRATION_REPS, Sequence, calibration_for
+from deftemg_acquisition.viz.screen import fit_font
 
 
 def expand(paths: list[Path]) -> list[Path]:
@@ -87,6 +94,11 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("sequences", type=Path, nargs="+", help="sequence files or directories")
     ap.add_argument("--port", help="serial port (default: auto-detect)")
     ap.add_argument("--simulate", action="store_true", help="use a simulated armband")
+    ap.add_argument(
+        "--remote", metavar="SOURCE",
+        help="the armband on another computer (pixi run serve there): its source_id or host "
+             "name; its filter setting is used",
+    )  # fmt: skip
     ap.add_argument("--hand", choices=["right", "left"], default="right")
     ap.add_argument(
         "--lookahead", type=float, default=DEFAULT_LOOKAHEAD_S, help="s of prompts visible ahead"
@@ -235,6 +247,11 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
         device = ReplayArmband(stream, speed=args.replay_speed)
         config.filter_enabled = stream.filter_status.enabled
         config.metadata["replay"] = [str(p) for p in args.replay]
+    elif args.remote:
+        from deftemg_acquisition.acquisition.remote import RemoteArmband
+
+        device = RemoteArmband(args.remote)
+        config.filter_enabled = device.resolve().enabled  # before the plugins see the config
     plugins = ext.plugins(args, config)
 
     viewer = left = None
@@ -246,16 +263,19 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
     elif viewer_args is not None:  # side by side: the prompter on the left, the viewer right
         from deftemg_acquisition.viz.screen import geometry_args, snap, split_screen
 
-        pg.mkQApp("Prompter")
+        fit_font(pg.mkQApp("Prompter"))
         left, right = split_screen()
+        # this session's streams, not another's of the same name (another computer's)
+        source = ["--source", source_id_for(device.port)] if device is not None else []
         viewer = subprocess.Popen(
             [sys.executable, "-m", ext.viewer_module, "--arm", args.hand, *viewer_args,
-             "--beside", *geometry_args(right)]
+             "--beside", *geometry_args(right), *source]
         )  # fmt: skip
     try:
         with AcquisitionSession(config, device=device) as session:
             print(f"Saving to {session.session_dir}")
             app = pg.mkQApp("Prompter")
+            fit_font(app)  # before any window (once: kept if already done)
             win = TaskWindow(
                 session,
                 sequences,
