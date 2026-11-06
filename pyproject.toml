@@ -28,7 +28,7 @@ exclude = [".github", ".vscode", "examples"]
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "osx-64", "linux-64"]
-requires-pixi = ">=0.82"
+requires-pixi = ">=0.84"
 
 [tool.pixi.pypi-dependencies]
 deftemg-acquisition = { path = ".", editable = true }
