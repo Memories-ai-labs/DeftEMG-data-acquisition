@@ -91,7 +91,7 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    from deftemg_acquisition.acquisition.keyboard import cbreak_keys
+    from deftemg_acquisition.cli.keyboard import cbreak_keys
 
     config = SessionConfig(
         port=args.port,
@@ -112,7 +112,7 @@ def main() -> None:
     )
     device = None
     if args.simulate:
-        from deftemg_acquisition.acquisition.sim import SimulatedArmband
+        from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 
         device = Armband("simulated", ser=SimulatedArmband())
 

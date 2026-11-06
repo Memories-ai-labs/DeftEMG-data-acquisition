@@ -33,7 +33,7 @@ prompter), the two side by side at full height: the prompter on the left, the vi
 right. ``--no-stream`` opens no viewer (it reads the LSL stream).
 
 ``--replay PATH`` replays recorded sessions or trials instead of the armband
-(``acquisition.replay``), for trying a setup without hardware: it plays once, from when the
+(``acquisition.armband.replay``), for trying a setup without hardware: it plays once, from when the
 prompter opens, and the replayed EMG doesn't follow the prompts on screen.
 
 Other code can add options, task window plugins and viewer options (``main``'s ``extension``:
@@ -232,11 +232,11 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
     )
     device = None
     if args.simulate:
-        from deftemg_acquisition.acquisition.sim import SimulatedArmband
+        from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 
         device = Armband("simulated", ser=SimulatedArmband())
     elif args.replay:
-        from deftemg_acquisition.acquisition.replay import RecordedStream, ReplayArmband
+        from deftemg_acquisition.acquisition.armband.replay import RecordedStream, ReplayArmband
 
         stream = RecordedStream.load(args.replay)
         device = ReplayArmband(stream, speed=args.replay_speed)

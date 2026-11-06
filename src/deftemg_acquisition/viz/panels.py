@@ -13,7 +13,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 from scipy.signal import welch
 
-from deftemg_acquisition.acquisition.protocol import EMG_RATE_HZ, N_EMG_CHANNELS
+from deftemg_acquisition.acquisition.armband.protocol import EMG_RATE_HZ, N_EMG_CHANNELS
 from deftemg_acquisition.viz.band import AutoScale, BandRmsWidget, band_rms
 
 EMG_CHANNELS = [f"ch{i}" for i in range(1, N_EMG_CHANNELS + 1)]

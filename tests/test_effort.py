@@ -78,7 +78,7 @@ def test_meter_reads_effort_relative_to_the_maximum():
 def test_meter_decodes_live_armband_chunks(tmp_path):
     """As a sink on a (simulated) armband: chunks decoded and filtered on its worker thread."""
     from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-    from deftemg_acquisition.acquisition.sim import SimulatedArmband
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 
     config = SessionConfig(data_dir=tmp_path, session_name="s", live_stream=False,
                            filter_enabled=False)  # fmt: skip
@@ -149,7 +149,7 @@ def test_task_window_saves_the_effort_trace(tmp_path, caplog):
     import pyqtgraph as pg
 
     from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-    from deftemg_acquisition.acquisition.sim import SimulatedArmband
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
     from deftemg_acquisition.tasks.app import TaskWindow
     from deftemg_acquisition.tasks.sequence import CALIBRATION
 
@@ -193,7 +193,7 @@ def test_a_failing_meter_switches_off_without_stopping_the_block(tmp_path, caplo
     import pyqtgraph as pg
 
     from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-    from deftemg_acquisition.acquisition.sim import SimulatedArmband
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
     from deftemg_acquisition.tasks.app import TaskWindow
 
     block = Sequence("b", "single", [Prompt(0.0, 5.0, ("index",), ("low",))])

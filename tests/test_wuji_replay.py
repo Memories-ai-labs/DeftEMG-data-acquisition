@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig, wuji
-from deftemg_acquisition.acquisition.sim import SimulatedArmband
+from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 from deftemg_acquisition.acquisition.wuji import WujiGloveRecorder
 from deftemg_acquisition.acquisition.wuji.replay import ReplayGlove, stream_topic
 
@@ -122,6 +122,16 @@ def test_missing_stream_is_reported(tmp_path):
     with pytest.raises(AttributeError, match="tactile_binary"):
         WujiGloveRecorder(streams=["tactile_binary"], glove=glove).open()
     assert glove.available_streams(["tactile", "tactile_binary"]) == ["tactile"]
+
+
+def test_live_only_streams_missing_from_a_recording_are_skipped(tmp_path):
+    glove = ReplayGlove(write_glove_mcap(tmp_path / "g.mcap", seconds=0.1))
+    rec = WujiGloveRecorder(streams=["tactile"], glove=glove, live=True)
+    info = rec.open()  # no tactile_zones, point cloud or tip poses in this recording
+    try:
+        assert info["live_streams"] == ["hand_joint_angles"]
+    finally:
+        rec.close()
 
 
 def test_cli_options_make_a_replay_source(tmp_path):

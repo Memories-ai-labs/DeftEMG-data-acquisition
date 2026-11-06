@@ -5,9 +5,9 @@ import numpy as np
 import pytest
 
 from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig, decode
-from deftemg_acquisition.acquisition import protocol as P
-from deftemg_acquisition.acquisition.device import _looks_usb
-from deftemg_acquisition.acquisition.sim import SimulatedArmband
+from deftemg_acquisition.acquisition.armband import protocol as P
+from deftemg_acquisition.acquisition.armband.device import _looks_usb
+from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 
 
 def emg_packet(seq: int, counts: list[int]) -> bytes:

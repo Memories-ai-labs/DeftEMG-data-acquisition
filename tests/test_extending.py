@@ -57,7 +57,7 @@ def test_task_window_plugins(tmp_path, caplog):
     from pyqtgraph.Qt import QtCore
 
     from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-    from deftemg_acquisition.acquisition.sim import SimulatedArmband
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
     from deftemg_acquisition.tasks.app import TaskPlugin, TaskWindow
     from deftemg_acquisition.tasks.sequence import Prompt, Sequence
 

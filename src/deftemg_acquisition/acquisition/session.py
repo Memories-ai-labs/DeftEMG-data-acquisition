@@ -27,9 +27,9 @@ from deftemg_acquisition.analysis.filtering import EmgFilter
 from deftemg_acquisition.clock import HOST_CLOCK, anchor, host_ns
 from deftemg_acquisition.system import keep_awake
 
-from .device import Armband, DeviceError
-from .protocol import STALL_GAP_S, FilterStatus
-from .recorder import TrialRecorder
+from .armband.device import Armband, DeviceError
+from .armband.protocol import STALL_GAP_S, FilterStatus
+from .armband.recorder import TrialRecorder
 from .sources import TrialSource
 
 log = logging.getLogger(__name__)
@@ -133,7 +133,7 @@ class AcquisitionSession:
             )
             if self.config.live_stream:
                 # imported lazily: pulls in liblsl
-                from .live import LiveStreamer, describe_filter, live_filter_config
+                from .armband.live import LiveStreamer, describe_filter, live_filter_config
 
                 live = self.live_emg_filter()  # None: the armband has filtered already
                 emg_filter = None

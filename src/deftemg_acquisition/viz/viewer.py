@@ -12,7 +12,8 @@ rows); ``--geometry X Y W H``: where its window goes, frame included (``viz.scre
 ``prompter --viewer`` puts it on the right of the screen, the prompter on the left).
 
 When a Wuji Glove streams too (``acquire --wuji``, ``--wuji-simulate``, ``--wuji-replay``), a
-glove panel appears in the side column: tactile map, joint angles and contact (``viz.glove``).
+glove panels appear in the side column: 3D tactile hand, joint angles and tactile zone means
+(``viz.glove``).
 
 Other code can add panels under the band RMS (``panels``: :class:`ViewerPanel`, e.g. another
 LSL stream) and its own options (``parser`` and ``run``).
@@ -28,7 +29,7 @@ import pylsl
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
-from deftemg_acquisition.acquisition.live import (
+from deftemg_acquisition.acquisition.armband.live import (
     EMG_CHANNELS,
     EMG_STREAM_TYPE,
     IMU_CHANNELS,
@@ -134,7 +135,7 @@ class Viewer(QtWidgets.QMainWindow):
         """``compact``: the EMG traces and the band RMS only, with their controls (no spectrum,
         IMU or status line). ``beside`` (right of the prompter): the side panels left of the
         EMG traces, the controls on two rows. ``panels``: more side panels, under the band
-        RMS. ``glove``: a glove panel (``viz.glove``), shown when a glove streams."""
+        RMS. ``glove``: the glove panels (``viz.glove``), each shown when its stream appears."""
         super().__init__()
         self.setWindowTitle("EMG armband – live")
         self.spectrum_s = spectrum_s
@@ -158,12 +159,12 @@ class Viewer(QtWidgets.QMainWindow):
         self.spectrum = None if compact else SpectrumPlot()
         self.imu_plots = None if compact else ImuPlots()
         self.panels = list(panels)
-        self.glove = None
+        self.glove_panels: list[ViewerPanel] = []
         if glove:
-            from deftemg_acquisition.viz.glove import GlovePanel  # it builds on this module
+            from deftemg_acquisition.viz.glove import glove_panels  # it builds on this module
 
-            self.glove = GlovePanel()
-        self._side_panels = self.panels + ([self.glove] if self.glove else [])
+            self.glove_panels = glove_panels()
+        self._side_panels = self.panels + self.glove_panels
 
         side = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         column = [(self.band.widget, 340)] + [(pn.widget, pn.height) for pn in self._side_panels]

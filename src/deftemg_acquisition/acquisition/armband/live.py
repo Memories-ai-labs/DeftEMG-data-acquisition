@@ -32,6 +32,7 @@ from deftemg_acquisition.analysis.filtering import (
 from deftemg_acquisition.clock import host_ns
 from deftemg_acquisition.errors import ConfigError
 
+from ..lsl import STREAM_PREFIX, make_outlet
 from . import protocol as P
 
 log = logging.getLogger(__name__)
@@ -39,7 +40,6 @@ log = logging.getLogger(__name__)
 EMG_STREAM_TYPE = "EMG"
 IMU_STREAM_TYPE = "IMU"
 MARKER_STREAM_TYPE = "Markers"
-STREAM_PREFIX = "Waveletech"
 
 EMG_CHANNELS = [f"ch{i}" for i in range(1, P.N_EMG_CHANNELS + 1)]
 IMU_CHANNELS = [
@@ -96,23 +96,6 @@ class LiveFilter:
             self._zi = self._zi_unit[:, :, None] * x[0]
         y, self._zi = signal.sosfilt(self.sos, x, axis=0, zi=self._zi)
         return y
-
-
-def make_outlet(
-    name, stype, channels, units, rate, fmt, source_id, manufacturer="WAVELETECH", **desc: str
-) -> pylsl.StreamOutlet:
-    """An LSL outlet with channel labels and units. Another stream joins the session's by
-    sharing its ``source_id`` (``LiveStreamer.source_id``), named with ``STREAM_PREFIX``."""
-    info = pylsl.StreamInfo(name, stype, len(channels), rate, fmt, source_id)
-    info.desc().append_child_value("manufacturer", manufacturer)
-    for key, value in desc.items():
-        info.desc().append_child_value(key, value)
-    chans = info.desc().append_child("channels")
-    for label, unit in zip(channels, units, strict=True):
-        ch = chans.append_child("channel")
-        ch.append_child_value("label", label)
-        ch.append_child_value("unit", unit)
-    return pylsl.StreamOutlet(info)
 
 
 class LiveStreamer:

@@ -16,7 +16,8 @@ With ``live=True`` each stream is also published over LSL as it arrives, whether
 trial is running (``LiveGlove``): one stream per glove stream, type ``Glove_<stream>``, named
 ``Waveletech glove <stream>``, each frame one sample of its fields flattened in order (e.g.
 ``hand_joint_angles``: 25 angles, then 5 confidences), stamped with its arrival time on the LSL
-clock like the armband's samples. The live viewer shows them (``viz.glove``).
+clock like the armband's samples. The live viewer shows them (``viz.glove``). Live, the
+recorder also subscribes to the ``LIVE_STREAMS`` the glove offers, for the viewer only.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from typing import Any
 import numpy as np
 import pylsl
 
-from deftemg_acquisition.acquisition.live import STREAM_PREFIX, make_outlet
+from deftemg_acquisition.acquisition.lsl import STREAM_PREFIX, make_outlet
 from deftemg_acquisition.clock import host_ns
 
 from .replay import ReplayGlove
@@ -84,6 +85,19 @@ def _imu(frame) -> dict[str, Any]:
     }
 
 
+CLOUD_POINTS = 549  # taxels in the glove's tactile point cloud
+
+
+def _point_cloud(frame) -> dict[str, Any]:
+    """Taxel positions (m, wrist frame) and pressures (-1: no reading), ``CLOUD_POINTS`` of
+    them (NaN pads a shorter cloud). Each point starts with float32 x, y, z, pressure."""
+    stride = frame.point_stride // 4
+    pts = np.frombuffer(bytes(frame.data), np.float32).reshape(-1, stride)[:CLOUD_POINTS, :4]
+    out = np.full((CLOUD_POINTS, 4), np.nan, np.float32)
+    out[: len(pts)] = pts
+    return {"position": out[:, :3], "pressure": out[:, 3]}
+
+
 # WujiGlove resource name -> converter of its frames
 STREAMS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "tactile": _data,  # calibrated tactile values
@@ -93,9 +107,14 @@ STREAMS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "hand_joint_angles": _joint_angles,
     "hand_skeleton": lambda f: _poses(f.joints),  # MediaPipe-order joints
     "emf_poses": lambda f: _poses(f.poses),  # raw EMF tracking poses
+    "tip_poses": lambda f: _poses(f.poses),  # fingertip poses, wrist frame, thumb..pinky
+    "tactile_point_cloud": _point_cloud,  # taxels in 3D (wrist frame) with their pressure
     **{f"imu_data_{part}": _imu for part in ("palm", "thumb", "index", "middle", "ring", "pinky")},
 }
 DEFAULT_STREAMS = ("tactile", "hand_joint_angles", "emf_poses")
+# also subscribed with live=True, when the glove offers them: published for the live viewer's
+# glove panels (``viz.glove``), not saved with trials unless asked for in ``streams``
+LIVE_STREAMS = ("hand_joint_angles", "tactile_zones", "tactile_point_cloud", "tip_poses")
 
 
 # --- buffering ----------------------------------------------------------------------------------
@@ -240,7 +259,8 @@ class WujiGloveRecorder:
     ``sn``: the glove to use (default: the only glove found). ``streams``: ``STREAMS`` names.
     ``glove``: an already connected glove object (``wuji_sdk.WujiGlove`` or a stand-in such
     as ``wuji.sim.SimulatedGlove``); if None, ``open`` scans and connects with ``wuji-sdk``.
-    ``live``: also publish the streams over LSL (``LiveGlove``), for the live viewer.
+    ``live``: also publish the streams over LSL (``LiveGlove``), for the live viewer, and
+    those of ``LIVE_STREAMS`` the glove offers (live only, not saved).
     """
 
     def __init__(
@@ -261,6 +281,7 @@ class WujiGloveRecorder:
         self.sn = sn
         self.glove = glove
         self.buffers = {s: StreamBuffer(s, STREAMS[s]) for s in streams}
+        self.live_buffers: dict[str, StreamBuffer] = {}  # live only, set by open
         self.live = live
         self._live: LiveGlove | None = None
         self._subs: list[Any] = []
@@ -273,13 +294,20 @@ class WujiGloveRecorder:
         if self.live:
             self._live = LiveGlove(source_id=f"{SOURCE_NAME}-{sn}")
         try:
-            for stream, buf in self.buffers.items():
-                resource = getattr(self.glove, stream)()
-                self._subs.append(
-                    resource.subscribe_with_callback(
-                        callback=partial(self._on_frame, buf), on_error=buf.error
-                    )
-                )
+            for buf in self.buffers.values():
+                self._subscribe(getattr(self.glove, buf.name)(), buf)
+            if self.live:
+                for stream in LIVE_STREAMS:
+                    if stream in self.buffers:
+                        continue
+                    try:
+                        resource = getattr(self.glove, stream)()
+                    except AttributeError:  # e.g. a recording without it: no live panel
+                        log.info("glove %s: not offered, not shown live", stream)
+                        continue
+                    buf = StreamBuffer(stream, STREAMS[stream])
+                    self._subscribe(resource, buf)
+                    self.live_buffers[stream] = buf
         except Exception:
             self.close()
             raise
@@ -288,6 +316,7 @@ class WujiGloveRecorder:
             "hand_side": _try_get(self.glove, "hand_side"),
             "firmware": _try_get(self.glove, "version"),
             "streams": list(self.buffers),
+            **({"live_streams": list(self.live_buffers)} if self.live else {}),
             "simulated": bool(getattr(self.glove, "simulated", False)),
             **({"replay": str(self.glove.path)} if isinstance(self.glove, ReplayGlove) else {}),
         }
@@ -307,6 +336,13 @@ class WujiGloveRecorder:
         self._manager = manager
         log.info("wuji glove %s connected", gloves[0].sn)
         return glove
+
+    def _subscribe(self, resource: Any, buf: StreamBuffer) -> None:
+        self._subs.append(
+            resource.subscribe_with_callback(
+                callback=partial(self._on_frame, buf), on_error=buf.error
+            )
+        )
 
     def _on_frame(self, buf: StreamBuffer, frame: Any) -> None:
         t_ns = host_ns()  # stamp first: the arrival time is the timeline
@@ -336,6 +372,7 @@ class WujiGloveRecorder:
             except Exception:
                 log.exception("glove: closing a subscription failed")
         self._subs = []
+        self.live_buffers = {}
         self._live = None
         if self._manager is not None:
             try:

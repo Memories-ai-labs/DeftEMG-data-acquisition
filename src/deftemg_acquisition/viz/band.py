@@ -23,7 +23,7 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from deftemg_acquisition.acquisition.protocol import BAND_SLOTS, N_EMG_CHANNELS
+from deftemg_acquisition.acquisition.armband.protocol import BAND_SLOTS, N_EMG_CHANNELS
 
 PUCK_DEG = 90.0  # puck at the top (dorsal), angles counterclockwise from the right (screen)
 POD_STEP_DEG = 360.0 / BAND_SLOTS

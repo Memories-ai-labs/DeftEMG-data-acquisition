@@ -6,12 +6,12 @@ import pytest
 from scipy import signal
 
 from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-from deftemg_acquisition.acquisition import protocol as P
-from deftemg_acquisition.acquisition.sim import SimulatedArmband
+from deftemg_acquisition.acquisition.armband import protocol as P
+from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 from deftemg_acquisition.analysis.filtering import filter_emg
 
 pylsl = pytest.importorskip("pylsl")
-from deftemg_acquisition.acquisition.live import (  # noqa: E402 (needs liblsl)
+from deftemg_acquisition.acquisition.armband.live import (  # noqa: E402 (needs liblsl)
     LiveFilter,
     LiveStreamer,
     describe_filter,

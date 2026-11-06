@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-from deftemg_acquisition.acquisition.sim import SimulatedArmband
+from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 from deftemg_acquisition.acquisition.wuji import StreamBuffer, WujiGloveRecorder
 from deftemg_acquisition.acquisition.wuji.sim import N_TAXELS, SimulatedGlove
 from deftemg_acquisition.acquisition.wuji.wuji_recorder import STREAMS
@@ -156,39 +156,96 @@ def test_prompter_block_records_the_glove(tmp_path):
     assert "prompt_onset_host_ns" in d.files  # prompts, EMG and glove in one file
 
 
-def test_live_glove_reaches_the_viewer_panel():
+def test_live_glove_reaches_the_viewer_panels():
     import os
 
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     import pylsl
     import pyqtgraph as pg
 
-    from deftemg_acquisition.viz.glove import GlovePanel
+    from deftemg_acquisition.viz.glove import glove_panels
 
     pg.mkQApp()
-    panel = GlovePanel()
+    panels = glove_panels(hand=False)
+    joints, zones = panels
     for _ in range(5):
-        panel.poll()
-    assert not panel.widget.isVisible()  # no glove streaming: hidden
-    rec = WujiGloveRecorder(streams=["tactile", "hand_joint_angles"], live=True,
+        for pn in panels:
+            pn.poll()
+    assert not any(pn.widget.isVisible() for pn in panels)  # no glove streaming: hidden
+    rec = WujiGloveRecorder(streams=["tactile"], live=True,
                             glove=SimulatedGlove(rate_hz=200))  # fmt: skip
     rec.open()
-    panel.widget.show()  # as inside a shown viewer window
-    panel.widget.setVisible(False)
+    assert set(rec.live_buffers) == {"hand_joint_angles", "tactile_zones",
+                                     "tactile_point_cloud", "tip_poses"}  # fmt: skip
+    for pn in panels:
+        pn.widget.show()  # as inside a shown viewer window
+        pn.widget.setVisible(False)
     try:
         deadline = time.monotonic() + 10
-        while (panel.tactile.n < 20 or panel.angles.n < 20) and time.monotonic() < deadline:
-            panel.poll()
+        while min(pn.inlet.n for pn in panels) < 20 and time.monotonic() < deadline:
+            for pn in panels:
+                pn.poll()
             time.sleep(0.02)
     finally:
         rec.close()
-    assert panel.widget.isVisible()
-    assert panel.tactile.labels[:2] == ["data_0", "data_1"]
-    assert len(panel.tactile.labels) == N_TAXELS
-    assert len(panel.angles.labels) == 30  # 25 angles, 5 confidences
-    panel.draw(pylsl.local_clock(), 5.0)
-    assert panel.image.image.shape == (24, 32)
-    assert len(panel.bars.opts["height"]) == 25
-    t, _ = panel.contact_curve.getData()
+    assert all(pn.widget.isVisible() for pn in panels)
+    assert len(joints.inlet.labels) == 30  # 25 angles, 5 confidences
+    for pn in panels:
+        pn.draw(pylsl.local_clock(), 5.0)
+    t, y = joints.curves[0].xData, joints.curves[0].yData  # as set, not as clipped to view
     assert len(t) >= 20 and t.max() <= 0.5 and t.min() >= -5.0  # on the EMG time axis
-    assert rec._live is None  # closed
+    assert np.abs(y).max() > 1.0  # degrees, not radians
+    assert len(zones.curves) == 6
+    assert rec._live is None and rec.live_buffers == {}  # closed
+
+
+def test_live_only_streams_are_not_saved_with_trials():
+    rec = WujiGloveRecorder(streams=["tactile"], live=True, glove=SimulatedGlove())
+    info = rec.open()
+    try:
+        assert info["streams"] == ["tactile"]
+        assert "tactile_point_cloud" in info["live_streams"]
+        rec.start_trial(1, 0)
+        time.sleep(0.2)
+        arrays, meta = rec.end_trial(2**62)
+        assert rec.live_buffers["tactile_point_cloud"].n_received > 5
+        assert rec._live.n_errors == 0  # every live frame published
+    finally:
+        rec.close()
+    assert list(meta["streams"]) == ["tactile"]
+    assert all(k.startswith("tactile_") for k in arrays)
+
+
+def test_point_cloud_and_tip_poses_converters():
+    from deftemg_acquisition.acquisition.wuji.wuji_recorder import CLOUD_POINTS
+
+    pts = np.arange(10 * 5, dtype=np.float32).reshape(10, 5)  # x, y, z, pressure, extra
+    frame = NS(point_stride=20, data=list(pts.tobytes()))  # as replayed: a list of bytes
+    out = STREAMS["tactile_point_cloud"](frame)
+    assert out["position"].shape == (CLOUD_POINTS, 3)
+    assert out["position"][:10].tolist() == pts[:, :3].tolist()
+    assert out["pressure"][:10].tolist() == pts[:, 3].tolist()
+    assert np.isnan(out["position"][10:]).all()  # a shorter cloud is padded
+    big = np.zeros((CLOUD_POINTS + 7, 4), np.float32)
+    assert STREAMS["tactile_point_cloud"](NS(point_stride=16, data=big.tobytes()))[
+        "pressure"].shape == (CLOUD_POINTS,)  # fmt: skip
+    tips = SimulatedGlove().tip_poses()
+    got = []
+    sub = tips.subscribe_with_callback(got.append)
+    time.sleep(0.05)
+    sub.close()
+    assert np.asarray(STREAMS["tip_poses"](got[0])["position"]).shape == (5, 3)
+
+
+def test_glove_panel_selectors():
+    from deftemg_acquisition.acquisition.wuji.wuji_recorder import flatten_fields
+    from deftemg_acquisition.viz.glove import ZONES, field_columns, joint_angles_deg, zone_means
+
+    labels, row = flatten_fields({"thumb": [0.2, -1.0, 0.4], "palm": [-1.0, -1.0],
+                                  "index": [1.0]})  # fmt: skip
+    assert field_columns(labels, "thumb").tolist() == [0, 1, 2]
+    means = zone_means(labels)(row[None, :])[0]
+    assert means[ZONES.index("thumb")] == pytest.approx(0.3)  # -1: no reading, left out
+    assert means[ZONES.index("palm")] == 0.0 and means[ZONES.index("index")] == 1.0
+    labels, row = flatten_fields({"angles": np.full(25, np.pi / 2), "confidence": [1.0] * 5})
+    assert joint_angles_deg(labels)(row[None, :]).tolist() == [[pytest.approx(90.0)] * 25]

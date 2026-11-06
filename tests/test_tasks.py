@@ -107,7 +107,7 @@ def test_task_window_runs_block_and_saves_prompts(tmp_path):
     from pyqtgraph.Qt import QtCore
 
     from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-    from deftemg_acquisition.acquisition.sim import SimulatedArmband
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
     from deftemg_acquisition.tasks.app import TaskWindow
 
     seq = Sequence("quick", "single", [Prompt(0.2, 0.3, ("middle",), ("high",))])
@@ -270,7 +270,7 @@ def test_calibration_blocks_come_back_on_schedule(tmp_path):
     import pyqtgraph as pg
 
     from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-    from deftemg_acquisition.acquisition.sim import SimulatedArmband
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
     from deftemg_acquisition.tasks.app import TaskWindow
     from deftemg_acquisition.tasks.sequence import CALIBRATION
 
