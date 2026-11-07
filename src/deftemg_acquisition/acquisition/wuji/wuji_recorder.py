@@ -20,13 +20,26 @@ clock like the armband's samples. The live viewer shows them (``viz.glove``). Li
 recorder also subscribes to the ``LIVE_STREAMS`` the glove offers, for the viewer only.
 """
 
-from __future__ import annotations
-
 import logging
 import threading
 from collections.abc import Callable, Iterable
 from functools import partial
 from typing import Any
+
+from wuji_sdk import (
+    WujiException,
+    DeviceType,
+    SdkManager,
+    WujiGlove,
+    TactileFrame,
+    TactileZones,
+    EmfPoseArray,
+    HandJointAngles,
+    HandSkeleton,
+    PointCloud
+)
+
+from deftemg_acquisition.acquisition.peripherals.peripherals import Peripheral
 
 import numpy as np
 import pylsl
@@ -111,20 +124,16 @@ STREAMS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "tactile_point_cloud": _point_cloud,  # taxels in 3D (wrist frame) with their pressure
     **{f"imu_data_{part}": _imu for part in ("palm", "thumb", "index", "middle", "ring", "pinky")},
 }
+
 DEFAULT_STREAMS = ("tactile", "hand_joint_angles", "emf_poses")
-# also subscribed with live=True, when the glove offers them: published for the live viewer's
-# glove panels (``viz.glove``), not saved with trials unless asked for in ``streams``
 LIVE_STREAMS = ("hand_joint_angles", "tactile_zones", "tactile_point_cloud", "tip_poses")
-
-
-# --- buffering ----------------------------------------------------------------------------------
-
 
 class StreamBuffer:
     """One stream's frames during a trial. ``add`` runs on the SDK's callback thread."""
 
-    def __init__(self, name: str, convert: Callable[[Any], dict[str, Any]]):
+    def __init__(self, name: str, convert: Callable[[Any], dict[str, Any]], topic: str | None = None):
         self.name = name
+        self.topic = topic or name  # the STREAMS name, e.g. "tactile" for "left_tactile"
         self.convert = convert
         self._lock = threading.Lock()
         self._recording = False
@@ -235,7 +244,7 @@ class LiveGlove:
             outlet = self._outlets.get(buf.name)
             if outlet is None:
                 outlet = make_outlet(
-                    f"{STREAM_PREFIX} glove {buf.name}", live_stream_type(buf.name), labels,
+                    f"{STREAM_PREFIX} glove {buf.name}", live_stream_type(buf.topic), labels,
                     [""] * len(labels), pylsl.IRREGULAR_RATE, pylsl.cf_float32,
                     self.source_id, manufacturer="Wuji",
                 )  # fmt: skip
@@ -250,10 +259,9 @@ class LiveGlove:
                 log.exception("glove %s: could not publish a frame live", buf.name)
 
 
-# --- the source ---------------------------------------------------------------------------------
 
 
-class WujiGloveRecorder:
+class WujiGloveRecorder(Peripheral):
     """A Wuji Glove as an ``AcquisitionSession`` source.
 
     ``sn``: the glove to use (default: the only glove found). ``streams``: ``STREAMS`` names.
@@ -277,72 +285,96 @@ class WujiGloveRecorder:
             raise ValueError(f"unknown glove streams {unknown}; known: {sorted(STREAMS)}")
         if not streams:
             raise ValueError("no glove streams to record")
+        
+        self.live_buffers: dict[tuple[str, str], StreamBuffer] = {}
         self.name = name
         self.sn = sn
-        self.glove = glove
-        self.buffers = {s: StreamBuffer(s, STREAMS[s]) for s in streams}
-        self.live_buffers: dict[str, StreamBuffer] = {}  # live only, set by open
-        self.live = live
-        self._live: LiveGlove | None = None
-        self._subs: list[Any] = []
-        self._manager = None  # set when this recorder made the SDK connection
+        self.streams = streams
+        self.buffers: dict[tuple[str, str], StreamBuffer] = {}
+        self.subscriptions: list[Any] = []
+        self.acquiring = False
+        self.manager = None  # set when this recorder made the SDK connection
+        self._live = LiveGlove(source_id=SOURCE_NAME) if live else None
+        # self.glove = glove
+
+    def initialize(self) -> list[Any]:
+        manager = SdkManager.instance()
+        devices: list[WujiGlove] = [d for d in manager.scan() if d.device_type == DeviceType.WujiGlove]
+        
+        if not devices:
+            raise RuntimeError(f"wuji: no glove found{f' with sn {self.sn}' if self.sn else ''}")
+        log.info("found %d wuji glove(s): %s", len(devices), ", ".join(d.sn for d in devices))
+        self.gloves = []
+        for d in devices:
+            self.gloves.append(manager.connect(sn=d.sn, device_name=f"{DEVICE_NAME}_{d.sn}"))
+
+        self.manager = manager
+        log.info("connected %d wuji glove(s)", len(self.gloves))
+        return self.gloves
+
+    def subscribe(self) -> None:
+        self.buffers: dict[tuple[str, str], StreamBuffer] = {}
+        self.live_buffers = {}
+        self.subscriptions: list[Any] = []
+        live_only = [t for t in LIVE_STREAMS if t not in self.streams] if self._live else []
+        try:
+            for glove in self.gloves:
+                side = glove.hand_side().get()
+                for topic in (*self.streams, *live_only):
+                    buf = StreamBuffer(f"{side}_{topic}", STREAMS[topic], topic)
+                    try:
+                        sub = getattr(glove, topic)().subscribe_with_callback(
+                            callback=partial(self._on_frame, buf), on_error=buf.error
+                        )
+                    except WujiException as e:
+                        log.warning("glove %s: %s not available, skipped (%s)", side, topic, e)
+                        continue
+                    if topic in self.streams:
+                        self.buffers[(side, topic)] = buf
+                    else:
+                        self.live_buffers[(side, topic)] = buf
+                    self.subscriptions.append(sub)
+        except Exception:
+            for sub in self.subscriptions:
+                sub.close()
+            self.subscriptions = []
+            raise
 
     def open(self) -> dict[str, Any]:
-        if self.glove is None:
-            self.glove = self._connect()
-        sn = getattr(self.glove, "serial_number", self.sn)
-        if self.live:
-            self._live = LiveGlove(source_id=f"{SOURCE_NAME}-{sn}")
+        self.initialize()
         try:
-            for buf in self.buffers.values():
-                self._subscribe(getattr(self.glove, buf.name)(), buf)
-            if self.live:
-                for stream in LIVE_STREAMS:
-                    if stream in self.buffers:
-                        continue
-                    try:
-                        resource = getattr(self.glove, stream)()
-                    except AttributeError:  # e.g. a recording without it: no live panel
-                        log.info("glove %s: not offered, not shown live", stream)
-                        continue
-                    buf = StreamBuffer(stream, STREAMS[stream])
-                    self._subscribe(resource, buf)
-                    self.live_buffers[stream] = buf
+            self.subscribe()
         except Exception:
             self.close()
             raise
         return {
-            "sn": sn,
-            "hand_side": _try_get(self.glove, "hand_side"),
-            "firmware": _try_get(self.glove, "version"),
-            "streams": list(self.buffers),
-            **({"live_streams": list(self.live_buffers)} if self.live else {}),
-            "simulated": bool(getattr(self.glove, "simulated", False)),
-            **({"replay": str(self.glove.path)} if isinstance(self.glove, ReplayGlove) else {}),
+            side: {
+                "sn": glove.serial_number,
+                "firmware": glove.version().get(),
+                "streams": [t for s, t in self.buffers if s == side],
+                **({"live_streams": [t for s, t in self.live_buffers if s == side]}
+                   if self._live else {}),
+            }
+            for glove in self.gloves
+            for side in [glove.hand_side().get()]
         }
 
-    def _connect(self):
-        from wuji_sdk import DeviceType, SdkManager  # imported here: optional dependency
-
-        manager = SdkManager.instance()
-        gloves = [d for d in manager.scan() if d.device_type == DeviceType.WujiGlove]
-        if self.sn is not None:
-            gloves = [d for d in gloves if d.sn == self.sn]
-        if len(gloves) != 1:
-            found = ", ".join(d.sn for d in gloves) or "none"
-            want = f"glove {self.sn}" if self.sn else "exactly one glove"
-            raise RuntimeError(f"wuji: need {want}, found: {found}")
-        glove = manager.connect(sn=gloves[0].sn, device_name=DEVICE_NAME)
-        self._manager = manager
-        log.info("wuji glove %s connected", gloves[0].sn)
-        return glove
-
-    def _subscribe(self, resource: Any, buf: StreamBuffer) -> None:
-        self._subs.append(
-            resource.subscribe_with_callback(
-                callback=partial(self._on_frame, buf), on_error=buf.error
-            )
-        )
+    def close(self) -> None:
+        for sub in self.subscriptions:
+            try:
+                sub.close()
+            except Exception:
+                log.exception("glove: closing a subscription failed")
+        self.subscriptions = []
+        self.live_buffers = {}
+        self._live = None
+        if self.manager is not None:
+            try:
+                for glove in self.gloves:
+                    self.manager.disconnect(f"{DEVICE_NAME}_{glove.serial_number}")
+            finally:
+                self.manager = None
+                self.gloves = []
 
     def _on_frame(self, buf: StreamBuffer, frame: Any) -> None:
         t_ns = host_ns()  # stamp first: the arrival time is the timeline
@@ -350,42 +382,20 @@ class WujiGloveRecorder:
         if self._live is not None:
             self._live.push(buf, frame, t_ns)
 
-    def start_trial(self, index: int, host_start_ns: int) -> None:
+    def start_acquisition(self, index: int, host_start_ns: int) -> None:
         for buf in self.buffers.values():
             buf.start(host_start_ns)
+        self.acquiring = True
 
-    def end_trial(self, host_end_ns: int) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    def stop_acquisition(self, host_end_ns: int) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
         arrays: dict[str, np.ndarray] = {}
         streams: dict[str, Any] = {}
-        for stream, buf in self.buffers.items():
+        for buf in self.buffers.values():
             a, summary = buf.stop(host_end_ns)
             arrays.update(a)
-            streams[stream] = summary
+            streams[buf.name] = summary
             if summary["n_frames"] == 0:
-                log.warning("glove %s: no frames in this trial", stream)
+                log.warning("glove %s: no frames in this trial", buf.name)
+        self.acquiring = False
         return arrays, {"streams": streams}
 
-    def close(self) -> None:
-        for sub in self._subs:
-            try:
-                sub.close()
-            except Exception:
-                log.exception("glove: closing a subscription failed")
-        self._subs = []
-        self.live_buffers = {}
-        self._live = None
-        if self._manager is not None:
-            try:
-                self._manager.disconnect(DEVICE_NAME)
-            finally:
-                self._manager = None
-                self.glove = None
-
-
-def _try_get(glove: Any, resource: str) -> Any:
-    """A device property via its resource's ``get()``, or None if unavailable."""
-    try:
-        value = getattr(glove, resource)().get()
-    except Exception:
-        return None
-    return value if isinstance(value, str | int | float | bool) else str(value)

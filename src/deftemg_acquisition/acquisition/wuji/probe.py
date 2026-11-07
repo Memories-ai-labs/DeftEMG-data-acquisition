@@ -40,10 +40,10 @@ def main(argv: list[str] | None = None) -> None:
         from deftemg_acquisition.clock import host_ns
 
         t0 = host_ns()
-        rec.start_trial(0, t0)
+        rec.start_acquisition(0, t0)
         print(f"recording {args.seconds:g} s ...")
         time.sleep(args.seconds)
-        arrays, meta = rec.end_trial(host_ns())
+        arrays, meta = rec.stop_acquisition(host_ns())
     finally:
         rec.close()
 

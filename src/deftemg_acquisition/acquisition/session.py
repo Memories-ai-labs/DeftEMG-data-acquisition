@@ -30,7 +30,7 @@ from deftemg_acquisition.system import keep_awake
 from .armband.device import Armband, DeviceError
 from .armband.protocol import STALL_GAP_S, FilterStatus
 from .armband.recorder import TrialRecorder
-from .sources import TrialSource
+from .peripherals.peripherals import Peripheral as TrialSource
 
 log = logging.getLogger(__name__)
 
@@ -250,7 +250,7 @@ class AcquisitionSession:
                 raise
         for src in self.sources:
             try:
-                src.start_trial(self.next_index, host_start_ns)
+                src.start_acquisition(self.next_index, host_start_ns)
             except Exception:
                 log.exception("source %s: start_trial failed", src.name)
         self._recorder = recorder
@@ -358,7 +358,7 @@ class AcquisitionSession:
         meta: dict[str, Any] = {}
         for src in self.sources:
             try:
-                src_arrays, src_meta = src.end_trial(host_end_ns)
+                src_arrays, src_meta = src.stop_acquisition(host_end_ns)
             except Exception as e:
                 log.exception("source %s: end_trial failed", src.name)
                 meta[src.name] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
