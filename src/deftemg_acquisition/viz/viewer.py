@@ -11,7 +11,7 @@ out to sit right of the prompter (the band RMS on the left of the EMG, the contr
 rows); ``--geometry X Y W H``: where its window goes, frame included (``viz.screen``:
 ``prompter --viewer`` puts it on the right of the screen, the prompter on the left).
 
-When a Wuji Glove streams too (``acquire --wuji``, ``--wuji-simulate``, ``--wuji-replay``), a
+When a Wuji Glove streams too (``acquire --wuji`` or ``prompter --wuji``), the
 glove panels appear in the side column: 3D tactile hand, joint angles and tactile zone means
 (``viz.glove``).
 

@@ -13,4 +13,11 @@ class Peripheral(ABC):
     def close(self) -> None:
         pass
 
-    
+    @abstractmethod
+    def start_acquisition(self) -> None:
+        pass
+
+    @abstractmethod
+    def stop_acquisition(self) -> None:
+        pass
+

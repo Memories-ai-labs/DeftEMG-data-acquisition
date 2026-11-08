@@ -47,7 +47,7 @@ import pylsl
 from deftemg_acquisition.acquisition.lsl import STREAM_PREFIX, make_outlet
 from deftemg_acquisition.clock import host_ns
 
-from .replay import ReplayGlove
+from .calibration import calibrate, use_user
 
 log = logging.getLogger(__name__)
 
@@ -264,10 +264,8 @@ class LiveGlove:
 class WujiGloveRecorder(Peripheral):
     """A Wuji Glove as an ``AcquisitionSession`` source.
 
-    ``sn``: the glove to use (default: the only glove found). ``streams``: ``STREAMS`` names.
-    ``glove``: an already connected glove object (``wuji_sdk.WujiGlove`` or a stand-in such
-    as ``wuji.sim.SimulatedGlove``); if None, ``open`` scans and connects with ``wuji-sdk``.
-    ``live``: also publish the streams over LSL (``LiveGlove``), for the live viewer, and
+    ``open`` scans and connects every glove found with ``wuji-sdk``. ``streams``: ``STREAMS``
+    names. ``live``: also publish the streams over LSL (``LiveGlove``), for the live viewer, and
     those of ``LIVE_STREAMS`` the glove offers (live only, not saved).
     """
 
@@ -275,9 +273,10 @@ class WujiGloveRecorder(Peripheral):
         self,
         sn: str | None = None,
         streams: Iterable[str] = DEFAULT_STREAMS,
-        glove: Any = None,
         name: str = SOURCE_NAME,
         live: bool = False,
+        calibrate: bool = False,
+        user: str | None = None,
     ):
         streams = tuple(streams)
         unknown = [s for s in streams if s not in STREAMS]
@@ -295,10 +294,15 @@ class WujiGloveRecorder(Peripheral):
         self.acquiring = False
         self.manager = None  # set when this recorder made the SDK connection
         self._live = LiveGlove(source_id=SOURCE_NAME) if live else None
-        # self.glove = glove
+        self.calibrate = calibrate
+        self.user = user  # name prefix of the timestamped SDK user made for the calibration
+        self.sdk_user: dict[str, Any] | None = None
+        self.calibration: dict[str, Any] = {}
 
     def initialize(self) -> list[Any]:
         manager = SdkManager.instance()
+        if self.calibrate:
+            self.sdk_user = use_user(manager, self.user)  # before connecting the gloves
         devices: list[WujiGlove] = [d for d in manager.scan() if d.device_type == DeviceType.WujiGlove]
         
         if not devices:
@@ -343,8 +347,12 @@ class WujiGloveRecorder(Peripheral):
     def open(self) -> dict[str, Any]:
         self.initialize()
         try:
+            if self.calibrate:
+                for glove in self.gloves:
+                    side = glove.hand_side().get()
+                    self.calibration[side] = calibrate(glove, side)
             self.subscribe()
-        except Exception:
+        except BaseException:  # also Ctrl+C during the calibration: disconnect the gloves
             self.close()
             raise
         return {
@@ -354,6 +362,7 @@ class WujiGloveRecorder(Peripheral):
                 "streams": [t for s, t in self.buffers if s == side],
                 **({"live_streams": [t for s, t in self.live_buffers if s == side]}
                    if self._live else {}),
+                **({"calibration": self.calibration[side]} if side in self.calibration else {}),
             }
             for glove in self.gloves
             for side in [glove.hand_side().get()]

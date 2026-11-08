@@ -1,7 +1,7 @@
 """The live viewer's glove panels, for a Wuji Glove's LSL streams.
 
 They read the streams published by ``WujiGloveRecorder(live=True)`` (``acquire`` / ``prompter``
-with ``--wuji``, ``--wuji-simulate`` or ``--wuji-replay``), type ``Glove_<stream>``. Each panel
+with ``--wuji``), type ``Glove_<stream>``. Each panel
 stays hidden until its stream appears, so armband-only sessions look as before. Under the band
 RMS:
 

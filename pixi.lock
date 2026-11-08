@@ -5045,7 +5045,6 @@ packages:
   - pyqt5>=5.15
   - pylsl>=1.18.6,<2
   - wuji-sdk>=2026.10.26 ; extra == 'wuji'
-  - mcap>=1.2 ; extra == 'wuji'
   - pyopengl>=3.1 ; extra == 'wuji'
   requires_python: '>=3.12'
 - pypi: https://files.pythonhosted.org/packages/6e/8c/a321631d26c9933ced7c51fd455e161481c3dd4e2d2c17820164104fa284/pylsl-1.18.6-py3-none-macosx_11_0_universal2.whl
