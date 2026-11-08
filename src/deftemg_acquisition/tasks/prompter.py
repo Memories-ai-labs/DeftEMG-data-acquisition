@@ -31,6 +31,7 @@ import numpy as np
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
 from deftemg_acquisition.clock import host_ns
+from deftemg_acquisition.viz.screen import font_points, font_px
 
 from .sequence import DIGITS, LEVELS, Sequence
 
@@ -245,6 +246,7 @@ class PrompterWidget(QtWidgets.QWidget):
         self._onsets_s = np.empty(0)
         self._offsets_s = np.empty(0)
         self._hand_cache: tuple[tuple, tuple[QtGui.QPainterPath, QtGui.QPainterPath]] | None = None
+        self._hand_image_cache: tuple[tuple, tuple[QtCore.QPointF, QtGui.QPixmap]] | None = None
         self.header = ""
         self.message = ""  # large centred text, e.g. instructions between blocks
         self.show_effort = False  # the effort bar (and room for it under the target row)
@@ -279,7 +281,8 @@ class PrompterWidget(QtWidgets.QWidget):
 
     def layout_for_size(self) -> Layout:
         meter_h = METER_H if self.show_effort else 0.0
-        return Layout(self.width(), self.height(), self.hand, self.lookahead_s, meter_h=meter_h)
+        return Layout(self.width(), self.height(), self.hand, self.lookahead_s,
+                      header_h=font_px(48), meter_h=meter_h)  # fmt: skip
 
     def _hand(self, lay: Layout) -> tuple[QtGui.QPainterPath, QtGui.QPainterPath]:
         """Hand paths, rebuilt only when the size or hand changes (path unions are slow)."""
@@ -287,6 +290,35 @@ class PrompterWidget(QtWidgets.QWidget):
         if self._hand_cache is None or self._hand_cache[0] != key:
             self._hand_cache = (key, hand_paths(lay))
         return self._hand_cache[1]
+
+    def _hand_image(self, lay: Layout, dpr: float) -> tuple[QtCore.QPointF, QtGui.QPixmap]:
+        """The hand drawn once per size, hand and pixel ratio, and where it goes: filling and
+        stroking its antialiased paths every frame costs more than the rest of the frame (more
+        so in a large window), and the GUI thread holds the GIL while it draws."""
+        key = (lay.width, lay.height, lay.hand, dpr)
+        if self._hand_image_cache is None or self._hand_image_cache[0] != key:
+            silhouette, nails = self._hand(lay)
+            # The visible part, with room for the outline's pen; whole pixels, so the image
+            # lands on the pixel grid as the paths would
+            rect = silhouette.boundingRect().united(nails.boundingRect()).adjusted(-2, -2, 2, 2)
+            rect = rect.intersected(QtCore.QRectF(0, 0, lay.width, lay.height)).toAlignedRect()
+            image = QtGui.QPixmap(
+                max(1, math.ceil(rect.width() * dpr)), max(1, math.ceil(rect.height() * dpr))
+            )
+            image.setDevicePixelRatio(dpr)
+            image.fill(QtCore.Qt.transparent)
+            hp = QtGui.QPainter(image)
+            hp.setRenderHint(QtGui.QPainter.Antialiasing)
+            hp.translate(-rect.left(), -rect.top())
+            hp.setBrush(_qcolor(FOREGROUND, 18))
+            hp.setPen(QtGui.QPen(_qcolor(FOREGROUND, 200), 2))
+            hp.drawPath(silhouette)
+            hp.setBrush(QtCore.Qt.NoBrush)
+            hp.setPen(QtGui.QPen(_qcolor(FOREGROUND, 90), 1.2))
+            hp.drawPath(nails)
+            hp.end()
+            self._hand_image_cache = (key, (QtCore.QPointF(rect.topLeft()), image))
+        return self._hand_image_cache[1]
 
     def paintEvent(self, _event) -> None:
         if self.t0_perf is not None:
@@ -345,13 +377,10 @@ class PrompterWidget(QtWidgets.QWidget):
             self._paint_effort(p, lay)
 
         # Hand
-        silhouette, nails = self._hand(lay)
-        p.setBrush(_qcolor(FOREGROUND, 18))
-        p.setPen(QtGui.QPen(_qcolor(FOREGROUND, 200), 2))
-        p.drawPath(silhouette)
-        p.setBrush(QtCore.Qt.NoBrush)
-        p.setPen(QtGui.QPen(_qcolor(FOREGROUND, 90), 1.2))
-        p.drawPath(nails)
+        # The pixel ratio of what is painted into (the window's backing store, or the image
+        # given to render()), not the widget's own (its screen's)
+        at, image = self._hand_image(lay, p.paintEngine().paintDevice().devicePixelRatioF())
+        p.drawPixmap(at, image)
 
         if self.sync_patch:
             self._paint_sync_patch(p)
@@ -359,7 +388,7 @@ class PrompterWidget(QtWidgets.QWidget):
         # Text
         p.setPen(_qcolor(FOREGROUND))
         font = p.font()
-        font.setPointSizeF(13)
+        font.setPointSizeF(font_points(13))
         p.setFont(font)
         p.drawText(QtCore.QRectF(16, 0, self.width() - 32, lay.header_h),
                    QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft, self.header)  # fmt: skip
@@ -367,7 +396,7 @@ class PrompterWidget(QtWidgets.QWidget):
             area = QtCore.QRectF(56, lay.header_h, self.width() - 112, lay.target_y - lay.header_h)
             flags = QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap
             for size in range(20, 9, -1):  # smaller text until it fits a small window
-                font.setPointSizeF(size)
+                font.setPointSizeF(font_points(size))
                 p.setFont(font)
                 text = p.boundingRect(area, flags, self.message)  # the backdrop fits the text
                 if text.height() <= area.height() and text.width() <= area.width():
@@ -428,11 +457,11 @@ class PrompterWidget(QtWidgets.QWidget):
             p.setPen(QtGui.QPen(_qcolor(FOREGROUND), 2))
             p.drawRect(QtCore.QRectF(x0 + lo * w, bar.top() - 1, (hi - lo) * w, bar.height() + 2))
         font = p.font()
-        font.setPointSizeF(9)
+        font.setPointSizeF(font_points(9))
         p.setFont(font)
         p.setPen(_qcolor(FOREGROUND, 200))
         for lv, (lo, hi) in self.effort_zones.items():
-            p.drawText(QtCore.QRectF(x0 + lo * w, bar.bottom() + 3, (hi - lo) * w, 14),
+            p.drawText(QtCore.QRectF(x0 + lo * w, bar.bottom() + 3, (hi - lo) * w, font_px(14)),
                        QtCore.Qt.AlignCenter, lv)  # fmt: skip
         p.restore()
 

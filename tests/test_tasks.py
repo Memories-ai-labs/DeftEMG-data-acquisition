@@ -236,6 +236,59 @@ def test_prompter_leaves_the_implied_thumb_lane_empty(task_set):
     assert (lit > 0) == drawn
 
 
+@pytest.mark.parametrize("hand", ["right", "left"])
+def test_prompter_hand_is_drawn_once_per_size(hand):
+    """The hand is drawn into an image once per size and hand, and that image looks as the
+    hand's paths drawn straight onto the window do."""
+    import pyqtgraph as pg
+    from pyqtgraph.Qt import QtCore, QtGui
+
+    from deftemg_acquisition.tasks.prompter import (
+        BACKGROUND,
+        FOREGROUND,
+        PrompterWidget,
+        _qcolor,
+        hand_paths,
+    )
+
+    pg.mkQApp()
+    w = PrompterWidget(hand=hand)
+    w.resize(600, 800)
+    img = QtGui.QImage(w.size(), QtGui.QImage.Format_ARGB32)
+    w.render(img)
+    lay = w.layout_for_size()
+    cached = w._hand_image_cache
+    w.render(img)
+    assert w._hand_image_cache is cached  # reused while the size stays
+
+    ref = QtGui.QImage(w.size(), QtGui.QImage.Format_ARGB32)
+    ref.fill(QtGui.QColor(BACKGROUND))
+    p = QtGui.QPainter(ref)
+    p.setRenderHint(QtGui.QPainter.Antialiasing)
+    silhouette, nails = hand_paths(lay)
+    p.setBrush(_qcolor(FOREGROUND, 18))
+    p.setPen(QtGui.QPen(_qcolor(FOREGROUND, 200), 2))
+    p.drawPath(silhouette)
+    p.setBrush(QtCore.Qt.NoBrush)
+    p.setPen(QtGui.QPen(_qcolor(FOREGROUND, 90), 1.2))
+    p.drawPath(nails)
+    p.end()
+    # Below the target row only the hand is drawn
+    diffs = [
+        max(abs(a - b) for a, b in zip(img.pixelColor(x, y).getRgb(),
+                                       ref.pixelColor(x, y).getRgb(), strict=True))
+        for x in range(0, w.width(), 3)
+        for y in range(int(lay.hand_top) - 2, w.height(), 3)
+    ]  # fmt: skip
+    assert max(diffs) <= 2  # rounding: the image holds premultiplied alpha
+    bg = QtGui.QColor(BACKGROUND).getRgb()
+    assert any(img.pixelColor(x, int(lay.hand_top) + 40).getRgb() != bg for x in range(w.width()))
+
+    w.resize(500, 700)
+    w.render(QtGui.QImage(w.size(), QtGui.QImage.Format_ARGB32))
+    assert w._hand_image_cache is not cached  # drawn again for the new size
+
+
 @pytest.mark.parametrize("kind", ["legacy", "calibration"])
 def test_prompter_draws_older_and_calibration_sequences(kind):
     """Recordings from before the two-level task (low / medium / high) and calibration blocks

@@ -32,7 +32,7 @@ exclude = [".github", ".vscode", "examples"]
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["osx-arm64", "osx-64", "linux-64"]
-requires-pixi = ">=0.82"
+requires-pixi = ">=0.84"
 
 [tool.pixi.pypi-dependencies]
 deftemg-acquisition = { path = ".", editable = true }
@@ -48,6 +48,7 @@ make-sequences = "python -m deftemg_acquisition.cli.make_sequences"
 check-timing = "python -m deftemg_acquisition.cli.check_timing"
 filter-emg = "python -m deftemg_acquisition.cli.filter_emg"
 replay = "python -m deftemg_acquisition.viz.replay"
+serve = "python -m deftemg_acquisition.cli.serve"
 make-synthetic = "python -m deftemg_acquisition.cli.make_synthetic"
 
 [tool.pixi.dependencies]
@@ -61,6 +62,7 @@ pyqt = ">=5.15.11,<6"
 # PyPI's Linux pylsl wheel doesn't bundle liblsl; pylsl finds this one in the environment's lib/
 [tool.pixi.target.linux-64.dependencies]
 liblsl = "*"
+pyopengl = ">=3.1.10,<4"  # the GPU-drawn EMG traces check the renderer (viz.gpu_traces)
 
 [tool.pixi.feature.dev.dependencies]
 pytest = ">=9.1.1,<10"

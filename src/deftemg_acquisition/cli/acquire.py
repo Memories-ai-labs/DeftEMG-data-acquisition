@@ -2,6 +2,7 @@
 
     pixi run acquire --port /dev/cu.usbmodem1101 --subject S01 --viewer
     pixi run acquire --simulate --viewer        # no hardware needed
+    pixi run acquire --remote <source_id or host> --viewer   # the armband on another computer
 
 Keys: s = start trial, e = end trial, q = quit.
 
@@ -28,6 +29,7 @@ from deftemg_acquisition.acquisition import (
     subjects,
     wuji,
 )
+from deftemg_acquisition.acquisition.session import source_id_for
 
 START_KEY, END_KEY, QUIT_KEY = "s", "e", "q"
 
@@ -79,6 +81,11 @@ def main() -> None:
         help="send StartDataAcq/StopDataAcq around each trial instead of streaming throughout",
     )
     ap.add_argument("--simulate", action="store_true", help="use a simulated armband")
+    ap.add_argument(
+        "--remote", metavar="SOURCE",
+        help="the armband on another computer (pixi run serve there): its source_id or host "
+             "name; its filter setting is used (README, \"The armband on another computer\")",
+    )  # fmt: skip
     ap.add_argument("-v", "--verbose", action="store_true")
     subjects.add_arguments(ap)
     wuji.add_arguments(ap)
@@ -115,13 +122,21 @@ def main() -> None:
         from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 
         device = Armband("simulated", ser=SimulatedArmband())
+    elif args.remote:
+        from deftemg_acquisition.acquisition.remote import RemoteArmband
+
+        device = RemoteArmband(args.remote)
+        config.filter_enabled = device.resolve().enabled
+        if args.per_trial_acq:
+            sys.exit("--remote streams throughout: no --per-trial-acq")
 
     sources = wuji.sources_from_args(args)
 
     viewer = None
     if args.viewer:
+        source = ["--source", source_id_for(device.port)] if device is not None else []
         viewer = subprocess.Popen(
-            [sys.executable, "-m", "deftemg_acquisition.viz.viewer", "--arm", args.arm]
+            [sys.executable, "-m", "deftemg_acquisition.viz.viewer", "--arm", args.arm, *source]
         )
     try:
         with AcquisitionSession(config, device=device, sources=sources) as session:

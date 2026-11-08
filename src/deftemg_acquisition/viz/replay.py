@@ -35,14 +35,15 @@ from deftemg_acquisition.data import trials
 from deftemg_acquisition.tasks.effort import ZONES
 from deftemg_acquisition.tasks.prompter import DEFAULT_LOOKAHEAD_S, DIGIT_COLORS, PrompterWidget
 from deftemg_acquisition.tasks.sequence import Prompt, Sequence
+from deftemg_acquisition.viz.gpu_traces import make_trace_plot
 from deftemg_acquisition.viz.panels import (
     BandRms,
     DisplayControls,
     ImuPlots,
     SpectrumPlot,
-    TracePlot,
     auto_spacing,
 )
+from deftemg_acquisition.viz.screen import fit_font
 
 FRAME_MS = 16
 SPECTRUM_EVERY_S = 0.25
@@ -278,7 +279,7 @@ class ReplayWindow(QtWidgets.QMainWindow):
 
         pg.setConfigOptions(antialias=False)
         self.controls = DisplayControls(window_s, self.auto_spacing, pause=False)
-        self.traces = TracePlot()
+        self.traces = make_trace_plot()  # drawn by the GPU when there is one
         self.spectrum = SpectrumPlot()
         self.imu_plots = ImuPlots()
         self.camera = CameraPanel(find_video_sources(data.npz_path))
@@ -372,7 +373,9 @@ class ReplayWindow(QtWidgets.QMainWindow):
             self.controls.spec_combo.currentIndexChanged,
         ):
             sig.connect(lambda *_: self.render(force_spectrum=True))
-        QtCore.QTimer(self, timeout=self._tick, interval=FRAME_MS).start()
+        frames = QtCore.QTimer(self, timeout=self._tick, interval=FRAME_MS)
+        frames.setTimerType(QtCore.Qt.PreciseTimer)  # frames on time: even scrolling
+        frames.start()
         self.render(force_spectrum=True)
         if autoplay:
             self.toggle_play()
@@ -429,7 +432,7 @@ class ReplayWindow(QtWidgets.QMainWindow):
         a, b = np.searchsorted(d.emg_t, [now - win, now])
         self.traces.draw(
             d.emg_t[a:b] - now, d.emg_uv[a:b], self.controls.spacing, win,
-            self.controls.offset_box.isChecked(),
+            self.controls.offset_box.isChecked(), first_index=int(a), now=now,
         )  # fmt: skip
         self.traces.place_markers(now)
         ia, ib = np.searchsorted(d.imu_t, [now - win, now])
@@ -503,6 +506,7 @@ def run(args: argparse.Namespace, path: Path | None = None, panels=None) -> None
     npz = resolve_trial(path or args.path, args.trial, args.data_dir)
     print(f"Replaying {npz}")
     app = pg.mkQApp("EMG replay")
+    fit_font(app)  # before any window
     data = load_trial(npz)
     if args.arm:
         data.arm = args.arm

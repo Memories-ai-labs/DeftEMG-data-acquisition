@@ -135,6 +135,10 @@ class Armband:
                     del self._reply_buf[: -self.REPLY_BUFFER_MAX]
                 self._cond.notify_all()
 
+    def describe(self) -> dict[str, str]:
+        """More about where the bytes come from, for ``session.json`` (none for a port)."""
+        return {}
+
     # --- streaming sink ----------------------------------------------------------------------
 
     def attach_sink(self, name: str, sink: ChunkSink) -> None:
