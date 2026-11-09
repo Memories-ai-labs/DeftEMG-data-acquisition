@@ -26,25 +26,11 @@ from collections.abc import Callable, Iterable
 from functools import partial
 from typing import Any
 
-from wuji_sdk import (
-    WujiException,
-    DeviceType,
-    SdkManager,
-    WujiGlove,
-    TactileFrame,
-    TactileZones,
-    EmfPoseArray,
-    HandJointAngles,
-    HandSkeleton,
-    PointCloud
-)
-
-from deftemg_acquisition.acquisition.peripherals.peripherals import Peripheral
-
 import numpy as np
 import pylsl
 
 from deftemg_acquisition.acquisition.lsl import STREAM_PREFIX, make_outlet
+from deftemg_acquisition.acquisition.peripherals.peripherals import Peripheral
 from deftemg_acquisition.clock import host_ns
 
 from .calibration import calibrate, use_user
@@ -128,10 +114,13 @@ STREAMS: dict[str, Callable[[Any], dict[str, Any]]] = {
 DEFAULT_STREAMS = ("tactile", "hand_joint_angles", "emf_poses")
 LIVE_STREAMS = ("hand_joint_angles", "tactile_zones", "tactile_point_cloud", "tip_poses")
 
+
 class StreamBuffer:
     """One stream's frames during a trial. ``add`` runs on the SDK's callback thread."""
 
-    def __init__(self, name: str, convert: Callable[[Any], dict[str, Any]], topic: str | None = None):
+    def __init__(
+        self, name: str, convert: Callable[[Any], dict[str, Any]], topic: str | None = None
+    ):
         self.name = name
         self.topic = topic or name  # the STREAMS name, e.g. "tactile" for "left_tactile"
         self.convert = convert
@@ -259,8 +248,6 @@ class LiveGlove:
                 log.exception("glove %s: could not publish a frame live", buf.name)
 
 
-
-
 class WujiGloveRecorder(Peripheral):
     """A Wuji Glove as an ``AcquisitionSession`` source.
 
@@ -284,7 +271,7 @@ class WujiGloveRecorder(Peripheral):
             raise ValueError(f"unknown glove streams {unknown}; known: {sorted(STREAMS)}")
         if not streams:
             raise ValueError("no glove streams to record")
-        
+
         self.live_buffers: dict[tuple[str, str], StreamBuffer] = {}
         self.name = name
         self.sn = sn
@@ -300,11 +287,13 @@ class WujiGloveRecorder(Peripheral):
         self.calibration: dict[str, Any] = {}
 
     def initialize(self) -> list[Any]:
+        from wuji_sdk import DeviceType, SdkManager  # the optional [wuji] extra: only to connect
+
         manager = SdkManager.instance()
         if self.calibrate:
             self.sdk_user = use_user(manager, self.user)  # before connecting the gloves
-        devices: list[WujiGlove] = [d for d in manager.scan() if d.device_type == DeviceType.WujiGlove]
-        
+        devices = [d for d in manager.scan() if d.device_type == DeviceType.WujiGlove]
+
         if not devices:
             raise RuntimeError(f"wuji: no glove found{f' with sn {self.sn}' if self.sn else ''}")
         log.info("found %d wuji glove(s): %s", len(devices), ", ".join(d.sn for d in devices))
@@ -317,6 +306,8 @@ class WujiGloveRecorder(Peripheral):
         return self.gloves
 
     def subscribe(self) -> None:
+        from wuji_sdk import WujiException
+
         self.buffers: dict[tuple[str, str], StreamBuffer] = {}
         self.live_buffers = {}
         self.subscriptions: list[Any] = []
@@ -360,8 +351,11 @@ class WujiGloveRecorder(Peripheral):
                 "sn": glove.serial_number,
                 "firmware": glove.version().get(),
                 "streams": [t for s, t in self.buffers if s == side],
-                **({"live_streams": [t for s, t in self.live_buffers if s == side]}
-                   if self._live else {}),
+                **(
+                    {"live_streams": [t for s, t in self.live_buffers if s == side]}
+                    if self._live
+                    else {}
+                ),
                 **({"calibration": self.calibration[side]} if side in self.calibration else {}),
             }
             for glove in self.gloves
@@ -407,4 +401,3 @@ class WujiGloveRecorder(Peripheral):
                 log.warning("glove %s: no frames in this trial", buf.name)
         self.acquiring = False
         return arrays, {"streams": streams}
-

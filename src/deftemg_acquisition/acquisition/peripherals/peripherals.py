@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 
+
 class Peripheral(ABC):
     """
     Abstract class for peripherals
@@ -20,4 +21,3 @@ class Peripheral(ABC):
     @abstractmethod
     def stop_acquisition(self) -> None:
         pass
-
