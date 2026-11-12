@@ -41,9 +41,6 @@ SOURCE_NAME = "glove"
 DEVICE_NAME = "deftemg_glove"  # local alias for the SDK connection
 
 
-# --- frame -> fields ----------------------------------------------------------------------------
-
-
 def _quat(q) -> list[float]:
     return [q.x, q.y, q.z, q.w]
 
@@ -111,8 +108,14 @@ STREAMS: dict[str, Callable[[Any], dict[str, Any]]] = {
     **{f"imu_data_{part}": _imu for part in ("palm", "thumb", "index", "middle", "ring", "pinky")},
 }
 
-DEFAULT_STREAMS = ("tactile", "hand_joint_angles", "emf_poses")
-LIVE_STREAMS = ("hand_joint_angles", "tactile_zones", "tactile_point_cloud", "tip_poses")
+TOPICS = (
+    "tactile",
+    "hand_joint_angles",
+    "emf_poses",
+    "tactile_zones",
+    "tactile_point_cloud",
+    "tip_poses",
+)
 
 
 class StreamBuffer:
@@ -195,8 +198,6 @@ class StreamBuffer:
             return arrays, summary
 
 
-# --- live stream --------------------------------------------------------------------------------
-
 LIVE_STREAM_TYPE = "Glove"
 
 
@@ -249,85 +250,64 @@ class LiveGlove:
 
 
 class WujiGloveRecorder(Peripheral):
-    """A Wuji Glove as an ``AcquisitionSession`` source.
-
-    ``open`` scans and connects every glove found with ``wuji-sdk``. ``streams``: ``STREAMS``
-    names. ``live``: also publish the streams over LSL (``LiveGlove``), for the live viewer, and
-    those of ``LIVE_STREAMS`` the glove offers (live only, not saved).
     """
 
-    def __init__(
-        self,
-        sn: str | None = None,
-        streams: Iterable[str] = DEFAULT_STREAMS,
-        name: str = SOURCE_NAME,
-        live: bool = False,
-        calibrate: bool = False,
-        user: str | None = None,
-    ):
-        streams = tuple(streams)
-        unknown = [s for s in streams if s not in STREAMS]
-        if unknown:
-            raise ValueError(f"unknown glove streams {unknown}; known: {sorted(STREAMS)}")
-        if not streams:
-            raise ValueError("no glove streams to record")
+    Wuji Glove Acquisition Session Source.
 
-        self.live_buffers: dict[tuple[str, str], StreamBuffer] = {}
-        self.name = name
-        self.sn = sn
-        self.streams = streams
-        self.buffers: dict[tuple[str, str], StreamBuffer] = {}
+    Args:
+        sn: single or multiple gloves.
+    """
+
+    name = SOURCE_NAME
+
+    def __init__(self, sn: str | Iterable[str] | None = None):
+        self.sn = (sn,) if isinstance(sn, str) else tuple(sn) if sn is not None else None
+        self.gloves: list[Any] = []
+        self.buffers: dict[tuple[str, str], StreamBuffer] = {}  # by (sn, topic)
         self.subscriptions: list[Any] = []
-        self.acquiring = False
-        self.manager = None  # set when this recorder made the SDK connection
-        self._live = LiveGlove(source_id=SOURCE_NAME) if live else None
-        self.calibrate = calibrate
-        self.user = user  # name prefix of the timestamped SDK user made for the calibration
-        self.sdk_user: dict[str, Any] | None = None
         self.calibration: dict[str, Any] = {}
+        self.manager = None  # set when this recorder made the SDK connection
+        self.lsl_publisher = LiveGlove(source_id=SOURCE_NAME)
 
     def initialize(self) -> list[Any]:
         from wuji_sdk import DeviceType, SdkManager  # the optional [wuji] extra: only to connect
 
         manager = SdkManager.instance()
-        if self.calibrate:
-            self.sdk_user = use_user(manager, self.user)  # before connecting the gloves
+        use_user(manager)
         devices = [d for d in manager.scan() if d.device_type == DeviceType.WujiGlove]
-
+        if self.sn is not None:
+            missing = [sn for sn in self.sn if sn not in {d.sn for d in devices}]
+            if missing:
+                found = ", ".join(d.sn for d in devices) or "none"
+                raise RuntimeError(f"wuji: glove {', '.join(missing)} not found; found: {found}")
+            devices = [d for d in devices if d.sn in self.sn]
         if not devices:
-            raise RuntimeError(f"wuji: no glove found{f' with sn {self.sn}' if self.sn else ''}")
-        log.info("found %d wuji glove(s): %s", len(devices), ", ".join(d.sn for d in devices))
-        self.gloves = []
-        for d in devices:
-            self.gloves.append(manager.connect(sn=d.sn, device_name=f"{DEVICE_NAME}_{d.sn}"))
-
+            raise RuntimeError("wuji: no glove found")
         self.manager = manager
-        log.info("connected %d wuji glove(s)", len(self.gloves))
+        self.gloves = [
+            manager.connect(sn=d.sn, device_name=f"{DEVICE_NAME}_{d.sn}") for d in devices
+        ]
+        log.info("connected wuji glove(s): %s", ", ".join(d.sn for d in devices))
         return self.gloves
 
     def subscribe(self) -> None:
         from wuji_sdk import WujiException
 
-        self.buffers: dict[tuple[str, str], StreamBuffer] = {}
-        self.live_buffers = {}
-        self.subscriptions: list[Any] = []
-        live_only = [t for t in LIVE_STREAMS if t not in self.streams] if self._live else []
+        self.buffers = {}
+        self.subscriptions = []
         try:
             for glove in self.gloves:
-                side = glove.hand_side().get()
-                for topic in (*self.streams, *live_only):
-                    buf = StreamBuffer(f"{side}_{topic}", STREAMS[topic], topic)
+                sn = glove.serial_number
+                for topic in TOPICS:
+                    buf = StreamBuffer(f"{sn}_{topic}", STREAMS[topic], topic)
                     try:
                         sub = getattr(glove, topic)().subscribe_with_callback(
                             callback=partial(self._on_frame, buf), on_error=buf.error
                         )
                     except WujiException as e:
-                        log.warning("glove %s: %s not available, skipped (%s)", side, topic, e)
+                        log.warning("glove %s: %s not available, skipped (%s)", sn, topic, e)
                         continue
-                    if topic in self.streams:
-                        self.buffers[(side, topic)] = buf
-                    else:
-                        self.live_buffers[(side, topic)] = buf
+                    self.buffers[(sn, topic)] = buf
                     self.subscriptions.append(sub)
         except Exception:
             for sub in self.subscriptions:
@@ -338,29 +318,23 @@ class WujiGloveRecorder(Peripheral):
     def open(self) -> dict[str, Any]:
         self.initialize()
         try:
-            if self.calibrate:
-                for glove in self.gloves:
-                    side = glove.hand_side().get()
-                    self.calibration[side] = calibrate(glove, side)
+            for glove in self.gloves:
+                side = glove.hand_side().get()
+                self.calibration[glove.serial_number] = calibrate(glove, side)
             self.subscribe()
         except BaseException:  # also Ctrl+C during the calibration: disconnect the gloves
             self.close()
             raise
-        return {
-            side: {
-                "sn": glove.serial_number,
+        info = {}
+        for glove in self.gloves:
+            sn = glove.serial_number
+            info[sn] = {
+                "hand_side": glove.hand_side().get(),
                 "firmware": glove.version().get(),
-                "streams": [t for s, t in self.buffers if s == side],
-                **(
-                    {"live_streams": [t for s, t in self.live_buffers if s == side]}
-                    if self._live
-                    else {}
-                ),
-                **({"calibration": self.calibration[side]} if side in self.calibration else {}),
+                "streams": [t for s, t in self.buffers if s == sn],
+                "calibration": self.calibration[sn],
             }
-            for glove in self.gloves
-            for side in [glove.hand_side().get()]
-        }
+        return info
 
     def close(self) -> None:
         for sub in self.subscriptions:
@@ -369,8 +343,6 @@ class WujiGloveRecorder(Peripheral):
             except Exception:
                 log.exception("glove: closing a subscription failed")
         self.subscriptions = []
-        self.live_buffers = {}
-        self._live = None
         if self.manager is not None:
             try:
                 for glove in self.gloves:
@@ -382,8 +354,7 @@ class WujiGloveRecorder(Peripheral):
     def _on_frame(self, buf: StreamBuffer, frame: Any) -> None:
         t_ns = host_ns()  # stamp first: the arrival time is the timeline
         buf.add(frame, t_ns)
-        if self._live is not None:
-            self._live.push(buf, frame, t_ns)
+        self.lsl_publisher.push(buf, frame, t_ns)
 
     def start_acquisition(self, index: int, host_start_ns: int) -> None:
         for buf in self.buffers.values():

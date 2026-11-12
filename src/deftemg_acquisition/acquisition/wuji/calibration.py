@@ -1,15 +1,15 @@
-"""Wuji Glove hand model calibration, run before recording (``WujiGloveRecorder(calibrate=True)``).
+"""Wuji Glove hand model calibration, run before recording (``WujiGloveRecorder.open``).
 
 Adapted from the SDK's ``examples/python/wuji_glove/5.calibration.py``. The SDK keeps one
 hand model per SDK user and hand side (``left_hand.urdf`` / ``right_hand.urdf``); a glove of
 that side connected under that user loads it. The default SDK user cannot calibrate, so
-``use_user`` creates a new user, named with the time, for each calibration.
+``use_user`` switches to the SDK user ``deftemg`` (made the first time); each calibration
+replaces the last.
 """
 
 import asyncio
 import logging
 import threading
-from datetime import datetime
 from typing import Any
 
 import pyqtgraph as pg
@@ -33,13 +33,14 @@ POSE_GUIDES = {
 }
 
 
-def use_user(manager: Any, name: str | None) -> dict[str, Any]:
-    """Create and switch to a new SDK user ``<name>_<YYYYmmdd-HHMMSS>`` (``name`` default
-    ``deftemg``): every recording is calibrated afresh, so each calibration gets its own user."""
-    display_name = f"{name or 'deftemg'}_{datetime.now():%Y%m%d-%H%M%S}"
-    user = manager.create_user(display_name, description="DeftEMG calibration before recording")
-    log.info("wuji: created SDK user %r", display_name)
-    return manager.switch_user(user["user_id"])
+SDK_USER = "deftemg"
+
+
+def use_user(manager: Any) -> None:
+    """Switch to the SDK user ``SDK_USER``, made if missing, before connecting the gloves."""
+    users = [u for u in manager.list_users() if u["display_name"] == SDK_USER]
+    user = users[0] if users else manager.create_user(SDK_USER)
+    manager.switch_user(user["user_id"])
 
 
 def progress_value(fb: dict[str, Any]) -> float:

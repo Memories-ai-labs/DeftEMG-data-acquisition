@@ -1,5 +1,6 @@
 """Wuji Glove as a session source: buffering, converters, failure isolation (no glove needed)."""
 
+import sys
 import time
 from types import SimpleNamespace as NS
 
@@ -8,8 +9,9 @@ import pytest
 
 from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
 from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
-from deftemg_acquisition.acquisition.wuji import StreamBuffer, WujiGloveRecorder
+from deftemg_acquisition.acquisition.wuji import StreamBuffer, WujiGloveRecorder, wuji_recorder
 from deftemg_acquisition.acquisition.wuji.wuji_recorder import STREAMS
+from deftemg_acquisition.clock import host_ns
 
 
 def _frame(seq, data):
@@ -36,9 +38,136 @@ def test_stream_buffer_keeps_only_the_trial_window():
     assert buf.stop(600)[1]["n_frames"] == 0
 
 
-def test_unknown_stream_is_rejected():
-    with pytest.raises(ValueError, match="unknown glove streams"):
-        WujiGloveRecorder(streams=["tactile", "nope"])
+class _Value:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
+class _Resource:
+    def __init__(self, glove, topic):
+        self.glove, self.topic = glove, topic
+
+    def subscribe_with_callback(self, callback, on_error):
+        self.glove.callbacks[self.topic] = callback
+        return NS(close=lambda: None)
+
+
+class _NotOffered(Exception):
+    pass
+
+
+class _FakeGlove:
+    def __init__(self, sn, side, offers):
+        self.serial_number, self.side, self.offers, self.callbacks = sn, side, offers, {}
+
+    def hand_side(self):
+        return _Value(self.side)
+
+    def version(self):
+        return _Value("1.0")
+
+    def __getattr__(self, topic):
+        if topic not in STREAMS:
+            raise AttributeError(topic)
+        if topic not in self.offers:
+            raise _NotOffered(topic)
+        return lambda: _Resource(self, topic)
+
+
+@pytest.fixture
+def fake_sdk(monkeypatch):
+    """A stand-in for ``wuji_sdk``: ``scan`` finds the gloves of ``found`` ({sn: side}), each
+    offering the streams of ``offers``."""
+    found: dict[str, str] = {}
+    offers = set(STREAMS)
+    connected: dict[str, _FakeGlove] = {}
+    users = [{"user_id": "", "display_name": "Default"}]
+    current = [""]
+
+    class SdkManager:
+        @staticmethod
+        def instance():
+            return SdkManager
+
+        @staticmethod
+        def scan():
+            return [NS(sn=sn, device_type="glove") for sn in found]
+
+        @staticmethod
+        def connect(sn, device_name):
+            connected[device_name] = _FakeGlove(sn, found[sn], offers)
+            return connected[device_name]
+
+        @staticmethod
+        def disconnect(device_name):
+            del connected[device_name]
+
+        @staticmethod
+        def list_users():
+            return users
+
+        @staticmethod
+        def create_user(display_name):
+            users.append({"user_id": f"u{len(users)}", "display_name": display_name})
+            return users[-1]
+
+        @staticmethod
+        def switch_user(user_id):
+            current[0] = user_id
+
+    sdk = NS(SdkManager=SdkManager, DeviceType=NS(WujiGlove="glove"), WujiException=_NotOffered)
+    monkeypatch.setitem(sys.modules, "wuji_sdk", sdk)
+    monkeypatch.setattr(wuji_recorder, "calibrate", lambda glove, side: {"urdf": f"{side}.urdf"})
+    return NS(found=found, offers=offers, connected=connected, users=users, current=current)
+
+
+def test_glove_sn_selects_among_the_gloves_found(fake_sdk):
+    fake_sdk.found.update({"A": "left", "B": "left"})
+    fake_sdk.offers.intersection_update({"tactile", "tactile_zones"})
+    rec = WujiGloveRecorder(sn="A")
+    assert rec.open() == {"A": {"hand_side": "left", "firmware": "1.0",
+                                "streams": ["tactile", "tactile_zones"],  # those offered
+                                "calibration": {"urdf": "left.urdf"}}}  # fmt: skip
+    assert [g.serial_number for g in fake_sdk.connected.values()] == ["A"]
+    rec.close()
+    assert not fake_sdk.connected
+
+
+def test_every_session_calibrates_under_one_sdk_user(fake_sdk):
+    fake_sdk.found.update({"A": "left"})
+    for _ in range(2):
+        rec = WujiGloveRecorder()
+        rec.open()
+        rec.close()
+    assert [u["display_name"] for u in fake_sdk.users] == ["Default", "deftemg"]
+    assert fake_sdk.current == ["u1"]
+
+
+def test_glove_sn_not_found_is_an_error(fake_sdk):
+    fake_sdk.found.update({"A": "left"})
+    with pytest.raises(RuntimeError, match="glove C not found; found: A"):
+        WujiGloveRecorder(sn=["A", "C"]).open()
+    assert not fake_sdk.connected
+
+
+def test_gloves_are_recorded_by_serial_number(fake_sdk):
+    fake_sdk.found.update({"A": "left", "B": "left"})  # the same side: kept apart all the same
+    fake_sdk.offers.intersection_update({"tactile"})
+    rec = WujiGloveRecorder()
+    info = rec.open()
+    assert [info[sn]["streams"] for sn in "AB"] == [["tactile"], ["tactile"]]
+    rec.start_acquisition(0, host_ns())
+    for i, glove in enumerate(fake_sdk.connected.values()):
+        glove.callbacks["tactile"](_frame(1, [float(i)]))
+    arrays, meta = rec.stop_acquisition(host_ns())
+    assert arrays["A_tactile_data"].tolist() == [[0.0]]
+    assert arrays["B_tactile_data"].tolist() == [[1.0]]
+    assert sorted(meta["streams"]) == ["A_tactile", "B_tactile"]
+    rec.close()
+    assert not fake_sdk.connected
 
 
 def _session(tmp_path, sources):
