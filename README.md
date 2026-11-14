@@ -678,6 +678,9 @@ sample was taken.
   - `armband/`: serial protocol, armband driver, trial recorder, live LSL streaming,
     simulator, recordings replayed as the armband.
   - `wuji/`: Wuji Glove recording as a session source (SDK, simulated glove, MCAP replay).
+    Before importing `wuji-sdk`, the recorder sets `WUJI_TELEMETRY_DISABLE`,
+    `WUJI_TELEMETRY_NO_UPLOAD` and `WUJI_DEVICE_TELEMETRY_DISABLE`, so the SDK does not
+    collect or upload usage or device telemetry (including a fitted calibration).
 - `src/deftemg_acquisition/viz/`: live viewer, replay, the plot panels they share, and window
   placement.
 - `src/deftemg_acquisition/tasks/`: prompt sequences, prompter drawing, task window, effort

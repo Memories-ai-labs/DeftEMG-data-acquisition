@@ -21,6 +21,7 @@ recorder also subscribes to the ``LIVE_STREAMS`` the glove offers, for the viewe
 """
 
 import logging
+import os
 import threading
 from collections.abc import Callable, Iterable
 from functools import partial
@@ -39,6 +40,13 @@ log = logging.getLogger(__name__)
 
 SOURCE_NAME = "glove"
 DEVICE_NAME = "deftemg_glove"  # local alias for the SDK connection
+
+
+def _disable_sdk_telemetry() -> None:
+    """Stop wuji-sdk collecting or uploading telemetry. It reads these when first imported."""
+    os.environ["WUJI_TELEMETRY_DISABLE"] = "1"  # no collection, no local storage, no upload
+    os.environ["WUJI_TELEMETRY_NO_UPLOAD"] = "1"
+    os.environ["WUJI_DEVICE_TELEMETRY_DISABLE"] = "1"
 
 
 def _quat(q) -> list[float]:
@@ -270,6 +278,7 @@ class WujiGloveRecorder(Peripheral):
         self.lsl_publisher = LiveGlove(source_id=SOURCE_NAME)
 
     def initialize(self) -> list[Any]:
+        _disable_sdk_telemetry()  # before the import: the SDK reads these at import time
         from wuji_sdk import DeviceType, SdkManager  # the optional [wuji] extra: only to connect
 
         manager = SdkManager.instance()
@@ -291,6 +300,7 @@ class WujiGloveRecorder(Peripheral):
         return self.gloves
 
     def subscribe(self) -> None:
+        _disable_sdk_telemetry()  # before the import: the SDK reads these at import time
         from wuji_sdk import WujiException
 
         self.buffers = {}

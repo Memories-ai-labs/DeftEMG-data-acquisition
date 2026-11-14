@@ -1,5 +1,6 @@
 """Wuji Glove as a session source: buffering, converters, failure isolation (no glove needed)."""
 
+import os
 import sys
 import time
 from types import SimpleNamespace as NS
@@ -134,6 +135,25 @@ def test_glove_sn_selects_among_the_gloves_found(fake_sdk):
     assert [g.serial_number for g in fake_sdk.connected.values()] == ["A"]
     rec.close()
     assert not fake_sdk.connected
+
+
+def test_sdk_telemetry_is_disabled_before_the_sdk_is_imported(fake_sdk, monkeypatch):
+    for name in (
+        "WUJI_TELEMETRY_DISABLE",
+        "WUJI_TELEMETRY_NO_UPLOAD",
+        "WUJI_DEVICE_TELEMETRY_DISABLE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    fake_sdk.found.update({"A": "left"})
+    rec = WujiGloveRecorder()
+    rec.open()
+    rec.close()
+    for name in (
+        "WUJI_TELEMETRY_DISABLE",
+        "WUJI_TELEMETRY_NO_UPLOAD",
+        "WUJI_DEVICE_TELEMETRY_DISABLE",
+    ):
+        assert os.environ[name] == "1"
 
 
 def test_every_session_calibrates_under_one_sdk_user(fake_sdk):
