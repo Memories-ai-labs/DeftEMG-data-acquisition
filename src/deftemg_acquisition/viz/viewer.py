@@ -11,6 +11,10 @@ out to sit right of the prompter (the band RMS on the left of the EMG, the contr
 rows); ``--geometry X Y W H``: where its window goes, frame included (``viz.screen``:
 ``prompter --viewer`` puts it on the right of the screen, the prompter on the left).
 
+When a Wuji Glove streams too (``acquire --wuji`` or ``prompter --wuji``), the
+glove panels appear in the side column: 3D tactile hand, joint angles and tactile zone means
+(``viz.glove``).
+
 ``--source``: the session to show when several publish (on this computer and others on the
 network), by its ``source_id`` or its computer's host name; without it, one on this computer.
 
@@ -30,7 +34,7 @@ import pylsl
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtWidgets
 
-from deftemg_acquisition.acquisition.live import (
+from deftemg_acquisition.acquisition.armband.live import (
     EMG_CHANNELS,
     EMG_STREAM_TYPE,
     IMU_CHANNELS,
@@ -38,7 +42,7 @@ from deftemg_acquisition.acquisition.live import (
     MARKER_STREAM_TYPE,
     STREAM_PREFIX,
 )
-from deftemg_acquisition.acquisition.protocol import EMG_RATE_HZ, IMU_RATE_HZ
+from deftemg_acquisition.acquisition.armband.protocol import EMG_RATE_HZ, IMU_RATE_HZ
 from deftemg_acquisition.viz.gpu_traces import GpuTracePlot, make_trace_plot
 from deftemg_acquisition.viz.panels import (
     MAX_WINDOW_S,
@@ -188,11 +192,12 @@ class Viewer(QtWidgets.QMainWindow):
     def __init__(
         self, window_s: float, spectrum_s: float, arm: str = "right", compact: bool = False,
         beside: bool = False, panels: list[ViewerPanel] | tuple[ViewerPanel, ...] = (),
+        glove: bool = True,
     ):  # fmt: skip
         """``compact``: the EMG traces and the band RMS only, with their controls (no spectrum,
         IMU or status line). ``beside`` (right of the prompter): the side panels left of the
         EMG traces, the controls on two rows. ``panels``: more side panels, under the band
-        RMS."""
+        RMS. ``glove``: the glove panels (``viz.glove``), each shown when its stream appears."""
         super().__init__()
         self.setWindowTitle("EMG armband – live")
         self.spectrum_s = spectrum_s
@@ -219,9 +224,15 @@ class Viewer(QtWidgets.QMainWindow):
         self.spectrum = None if compact else SpectrumPlot()
         self.imu_plots = None if compact else ImuPlots()
         self.panels = list(panels)
+        self.glove_panels: list[ViewerPanel] = []
+        if glove:
+            from deftemg_acquisition.viz.glove import glove_panels  # it builds on this module
+
+            self.glove_panels = glove_panels()
+        self._side_panels = self.panels + self.glove_panels
 
         side = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        column = [(self.band.widget, 340)] + [(pn.widget, pn.height) for pn in self.panels]
+        column = [(self.band.widget, 340)] + [(pn.widget, pn.height) for pn in self._side_panels]
         if not compact:
             column += [(self.spectrum, 190), (self.imu_plots.gyro, 150), (self.imu_plots.acc, 150)]
         for w, _ in column:
@@ -341,7 +352,7 @@ class Viewer(QtWidgets.QMainWindow):
         self.emg.poll()
         if self.imu is not None:
             self.imu.poll()
-        for pn in self.panels:
+        for pn in self._side_panels:
             pn.poll()
         for t, m in self.markers.poll():
             self.add_marker(t, m)
@@ -359,7 +370,7 @@ class Viewer(QtWidgets.QMainWindow):
         if self.imu is not None:
             ti, xi = self.imu.ring.last_seconds(win, IMU_RATE_HZ)
             self.imu_plots.draw(ti - now, xi[:, 0:3], xi[:, 3:6], win, sweep_now=sweep_now)
-        for pn in self.panels:
+        for pn in self._side_panels:
             pn.sweep = sweep_now is not None
             pn.draw(now, win)
         self.traces.place_markers(now, keep_s=MAX_WINDOW_S)

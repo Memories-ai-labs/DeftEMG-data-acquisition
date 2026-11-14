@@ -34,7 +34,7 @@ prompter), the two side by side at full height: the prompter on the left, the vi
 right. ``--no-stream`` opens no viewer (it reads the LSL stream).
 
 ``--replay PATH`` replays recorded sessions or trials instead of the armband
-(``acquisition.replay``), for trying a setup without hardware: it plays once, from when the
+(``acquisition.armband.replay``), for trying a setup without hardware: it plays once, from when the
 prompter opens, and the replayed EMG doesn't follow the prompts on screen.
 
 ``--remote SOURCE`` takes the armband plugged into another computer (``pixi run serve`` there;
@@ -55,7 +55,13 @@ from pathlib import Path
 
 import pyqtgraph as pg
 
-from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig, subjects
+from deftemg_acquisition.acquisition import (
+    AcquisitionSession,
+    Armband,
+    SessionConfig,
+    subjects,
+    wuji,
+)
 from deftemg_acquisition.acquisition.session import source_id_for
 from deftemg_acquisition.tasks.app import TaskPlugin, TaskWindow
 from deftemg_acquisition.tasks.effort import ZONES
@@ -180,6 +186,7 @@ def parser() -> argparse.ArgumentParser:
     ap.add_argument("--no-stream", action="store_true", help="don't publish over LSL")
     ap.add_argument("-v", "--verbose", action="store_true")
     subjects.add_arguments(ap)
+    wuji.add_arguments(ap)
     return ap
 
 
@@ -237,11 +244,11 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
     )
     device = None
     if args.simulate:
-        from deftemg_acquisition.acquisition.sim import SimulatedArmband
+        from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 
         device = Armband("simulated", ser=SimulatedArmband())
     elif args.replay:
-        from deftemg_acquisition.acquisition.replay import RecordedStream, ReplayArmband
+        from deftemg_acquisition.acquisition.armband.replay import RecordedStream, ReplayArmband
 
         stream = RecordedStream.load(args.replay)
         device = ReplayArmband(stream, speed=args.replay_speed)
@@ -252,6 +259,7 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
 
         device = RemoteArmband(args.remote)
         config.filter_enabled = device.resolve().enabled  # before the plugins see the config
+    sources = wuji.sources_from_args(args)
     plugins = ext.plugins(args, config)
 
     viewer = left = None
@@ -272,7 +280,7 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
              "--beside", *geometry_args(right), *source]
         )  # fmt: skip
     try:
-        with AcquisitionSession(config, device=device) as session:
+        with AcquisitionSession(config, device=device, sources=sources) as session:
             print(f"Saving to {session.session_dir}")
             app = pg.mkQApp("Prompter")
             fit_font(app)  # before any window (once: kept if already done)

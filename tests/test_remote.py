@@ -15,10 +15,10 @@ import numpy as np
 import pytest
 
 from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-from deftemg_acquisition.acquisition import protocol as P
-from deftemg_acquisition.acquisition.device import DeviceError
-from deftemg_acquisition.acquisition.recorder import TrialRecorder
-from deftemg_acquisition.acquisition.sim import SimulatedArmband
+from deftemg_acquisition.acquisition.armband import protocol as P
+from deftemg_acquisition.acquisition.armband.device import DeviceError
+from deftemg_acquisition.acquisition.armband.recorder import TrialRecorder
+from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 from deftemg_acquisition.clock import host_ns
 
 pylsl = pytest.importorskip("pylsl")

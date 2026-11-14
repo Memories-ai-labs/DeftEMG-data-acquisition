@@ -1,8 +1,8 @@
 """Data acquisition for the WAVELETECH 18-channel EMG armband."""
 
-from .device import Armband, DeviceError, find_port
-from .protocol import DecodedStream, FilterStatus, decode
-from .recorder import TrialRecorder
+from .armband.device import Armband, DeviceError, find_port
+from .armband.protocol import DecodedStream, FilterStatus, decode
+from .armband.recorder import TrialRecorder
 from .session import AcquisitionSession, SessionConfig, TrialResult
 
 __all__ = [

@@ -14,7 +14,7 @@ import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from scipy.signal import welch
 
-from deftemg_acquisition.acquisition.protocol import EMG_RATE_HZ, N_EMG_CHANNELS
+from deftemg_acquisition.acquisition.armband.protocol import EMG_RATE_HZ, N_EMG_CHANNELS
 from deftemg_acquisition.viz.band import AutoScale, BandRmsWidget, band_rms
 from deftemg_acquisition.viz.screen import font_points
 

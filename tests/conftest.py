@@ -31,7 +31,7 @@ def prompter_trial(tmp_path_factory):
     from pyqtgraph.Qt import QtCore
 
     from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-    from deftemg_acquisition.acquisition.sim import SimulatedArmband
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
     from deftemg_acquisition.tasks.app import TaskWindow
     from deftemg_acquisition.tasks.sequence import Prompt, Sequence
 
@@ -61,7 +61,7 @@ def prompter_trial(tmp_path_factory):
 def keyboard_trial(tmp_path_factory):
     """A keyboard-started trial (no prompts) recorded with the simulated armband; npz path."""
     from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-    from deftemg_acquisition.acquisition.sim import SimulatedArmband
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 
     tmp = tmp_path_factory.mktemp("keyboard")
     config = SessionConfig(data_dir=tmp, session_name="k", live_stream=False)

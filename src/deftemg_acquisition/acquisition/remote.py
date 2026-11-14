@@ -39,9 +39,9 @@ import pylsl
 
 from deftemg_acquisition.clock import host_ns
 
-from . import protocol as P
-from .device import Armband, DeviceError
-from .live import STREAM_PREFIX
+from .armband import protocol as P
+from .armband.device import Armband, DeviceError
+from .armband.live import STREAM_PREFIX
 
 log = logging.getLogger(__name__)
 

@@ -52,7 +52,7 @@ def main(argv: list[str] | None = None) -> None:
 
     device = None
     if args.simulate:
-        from deftemg_acquisition.acquisition.sim import SimulatedArmband
+        from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 
         device = Armband(args.port or "simulated", ser=SimulatedArmband())
     import tempfile

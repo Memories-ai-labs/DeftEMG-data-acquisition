@@ -15,6 +15,10 @@ dependencies = [
   "pylsl>=1.18.6,<2",
 ]
 
+[project.optional-dependencies]
+# Wuji Glove recording (--wuji); PyOpenGL for the viewer's 3D tactile hand
+wuji = ["wuji-sdk>=2026.10.26", "PyOpenGL>=3.1"]
+
 [build-system]
 build-backend = "hatchling.build"
 requires = ["hatchling>=1.27"]
