@@ -98,7 +98,8 @@ class AcquisitionSession:
     StopDataAcq. If ``live_stream`` is set, all data and trial markers also go out over LSL.
 
     ``sources``: extra devices recorded with every trial (:class:`~.sources.TrialSource`),
-    e.g. a data glove; their arrays go into the same ``.npz``, prefixed with their name.
+    e.g. a data glove; their arrays go into the same ``.npz``, prefixed with their name. A
+    source with ``save_files(session_dir)`` writes its own files into the session folder.
     """
 
     def __init__(
@@ -174,6 +175,14 @@ class AcquisitionSession:
             raise
         log.info("armband ready on %s: %s", self.device.port, self.filter_status)
         self.session_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            for src in self._opened_sources:
+                save_files = getattr(src, "save_files", None)
+                if save_files is not None:
+                    save_files(self.session_dir)
+        except Exception:
+            self._shutdown()
+            raise
         info = {
             "port": self.device.port,
             **self.device.describe(),

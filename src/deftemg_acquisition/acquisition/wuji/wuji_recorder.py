@@ -25,6 +25,7 @@ import os
 import threading
 from collections.abc import Callable, Iterable
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -296,6 +297,9 @@ class WujiGloveRecorder(Peripheral):
         self.buffers: dict[tuple[str, str], StreamBuffer] = {}  # by (sn, topic)
         self.subscriptions: list[Any] = []
         self.calibration: dict[str, Any] = {}
+        # by serial number: (file name in the session folder, URDF) of the calibrated hand
+        # model, read at once: the SDK keeps one file per hand side, replaced by the next one
+        self.hand_models: dict[str, tuple[str, str]] = {}
         self.manager = None  # set when this recorder made the SDK connection
         self.lsl_publisher = LiveGlove(source_id=SOURCE_NAME)
 
@@ -351,8 +355,12 @@ class WujiGloveRecorder(Peripheral):
         self.initialize()
         try:
             for glove in self.gloves:
-                side = glove.hand_side().get()
-                self.calibration[glove.serial_number] = calibrate(glove, side)
+                sn, side = glove.serial_number, glove.hand_side().get()
+                self.calibration[sn] = calibrate(glove, side)
+                urdf = self.calibration[sn].get("calibrated_urdf")
+                if urdf:
+                    name = f"{SOURCE_NAME}_{sn}_{side}_hand.urdf"
+                    self.hand_models[sn] = (name, Path(urdf).read_text())
             self.subscribe()
         except BaseException:  # also Ctrl+C during the calibration: disconnect the gloves
             self.close()
@@ -366,7 +374,14 @@ class WujiGloveRecorder(Peripheral):
                 "streams": [t for s, t in self.buffers if s == sn],
                 "calibration": self.calibration[sn],
             }
+            if sn in self.hand_models:
+                info[sn]["hand_model_file"] = self.hand_models[sn][0]
         return info
+
+    def save_files(self, session_dir: Path) -> None:
+        """Each glove's calibrated hand model, as ``glove_<sn>_<side>_hand.urdf``."""
+        for name, urdf in self.hand_models.values():
+            (session_dir / name).write_text(urdf)
 
     def close(self) -> None:
         for sub in self.subscriptions:

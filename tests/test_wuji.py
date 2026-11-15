@@ -204,6 +204,24 @@ def test_every_session_calibrates_under_one_sdk_user(fake_sdk):
     assert fake_sdk.current == ["u1"]
 
 
+def test_the_calibrated_hand_model_is_kept_as_it_was(fake_sdk, monkeypatch, tmp_path):
+    urdf = tmp_path / "sdk" / "left_hand.urdf"
+    urdf.parent.mkdir()
+    urdf.write_text("<robot name='A'/>")
+    monkeypatch.setattr(wuji_recorder, "calibrate",
+                        lambda glove, side: {"calibrated_urdf": str(urdf)})  # fmt: skip
+    fake_sdk.found.update({"A": "left"})
+    rec = WujiGloveRecorder()
+    info = rec.open()
+    assert info["A"]["hand_model_file"] == "glove_A_left_hand.urdf"
+    urdf.write_text("<robot name='next calibration'/>")  # the SDK replaces its file
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    rec.save_files(session_dir)
+    assert (session_dir / "glove_A_left_hand.urdf").read_text() == "<robot name='A'/>"
+    rec.close()
+
+
 def test_glove_sn_not_found_is_an_error(fake_sdk):
     fake_sdk.found.update({"A": "left"})
     with pytest.raises(RuntimeError, match="glove C not found; found: A"):
@@ -260,6 +278,16 @@ def test_failing_source_never_loses_the_emg(tmp_path):
     assert len(np.load(result.npz_path)["emg_uv"]) > 0
     assert result.sources["glove"] == {"ok": False, "error": "RuntimeError: glove unplugged"}
     assert src.closed
+
+
+def test_a_source_saves_its_files_with_the_session(tmp_path):
+    class Saving(_Failing):
+        def save_files(self, session_dir):
+            (session_dir / "glove_model.urdf").write_text("<robot/>")
+
+    with _session(tmp_path, [Saving()]) as session:
+        path = session.session_dir / "glove_model.urdf"
+        assert path.read_text() == "<robot/>"
 
 
 def test_source_open_failure_aborts_the_session(tmp_path):
