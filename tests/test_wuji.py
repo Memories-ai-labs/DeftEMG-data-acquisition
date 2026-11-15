@@ -59,6 +59,9 @@ def test_a_ragged_stream_fails_its_trial_and_the_others_are_kept():
     rec.start_acquisition(0, 0)
     ragged.add(_frame(1, [1.0, 2.0]), t_ns=10)
     ragged.add(_frame(2, [3.0]), t_ns=20)
+    assert ragged._host == [] and ragged._fields == {}  # freed as soon as it fails
+    ragged.add(_frame(3, [6.0, 7.0]), t_ns=25)  # not kept once failed
+    assert ragged._host == []
     good.add(_frame(1, [4.0, 5.0]), t_ns=10)
     arrays, meta = rec.stop_acquisition(30)
     assert arrays["A_tactile_data"].tolist() == [[4.0, 5.0]]
@@ -67,7 +70,11 @@ def test_a_ragged_stream_fails_its_trial_and_the_others_are_kept():
     assert meta["streams"]["A_ragged"]["ok"] is False
     assert meta["streams"]["A_ragged"]["error"].startswith("ValueError")
     assert not ragged._recording and not good._recording  # neither keeps recording
-    assert ragged._host == [] and ragged._fields == {}  # the failed trial's frames are freed
+
+    rec.start_acquisition(1, 100)  # the next trial starts afresh
+    ragged.add(_frame(4, [8.0]), t_ns=110)
+    arrays, meta = rec.stop_acquisition(200)
+    assert arrays["A_ragged_data"].tolist() == [[8.0]]
 
 
 class _Value:

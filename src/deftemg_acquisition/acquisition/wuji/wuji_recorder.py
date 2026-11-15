@@ -129,7 +129,8 @@ TOPICS = (
 class StreamBuffer:
     """One stream's frames during a trial. ``add`` runs on the SDK's callback thread.
 
-    Frames of different shapes in one trial make ``stop`` raise: the stream fails that trial."""
+    A frame whose shape differs from the trial's first frame fails the stream for that trial:
+    its frames are freed, later ones are not kept, and ``stop`` raises."""
 
     def __init__(
         self, name: str, convert: Callable[[Any], dict[str, Any]], topic: str | None = None
@@ -149,6 +150,8 @@ class StreamBuffer:
         self._dev: list[int] = []
         self._seq: list[int] = []
         self._fields: dict[str, list[np.ndarray]] = {}
+        self._shapes: dict[str, tuple[int, ...]] | None = None  # the trial's first frame
+        self._failed: str | None = None
 
     def start(self, host_start_ns: int) -> None:
         with self._lock:
@@ -159,7 +162,7 @@ class StreamBuffer:
     def add(self, frame: Any, t_ns: int) -> None:
         with self._lock:
             self.n_received += 1
-            if not self._recording:
+            if not self._recording or self._failed:
                 return
             try:
                 fields = self.convert(frame)
@@ -168,6 +171,15 @@ class StreamBuffer:
                 self.n_errors += 1
                 if self.n_errors == 1:
                     log.exception("glove %s: could not convert a frame", self.name)
+                return
+            shapes = {key: array.shape for key, array in values.items()}
+            if self._shapes is None:
+                self._shapes = shapes
+            elif shapes != self._shapes:
+                failed = f"a frame of shape {shapes}, the trial's first frame {self._shapes}"
+                log.error("glove %s: %s; the stream fails this trial", self.name, failed)
+                self._clear()
+                self._failed = failed
                 return
             header = frame.header
             self._host.append(t_ns)
@@ -186,6 +198,8 @@ class StreamBuffer:
         with self._lock:
             self._recording = False
             try:
+                if self._failed:
+                    raise ValueError(self._failed)
                 return self._arrays(host_end_ns)
             finally:
                 self._clear()
