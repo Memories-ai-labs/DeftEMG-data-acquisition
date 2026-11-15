@@ -39,6 +39,37 @@ def test_stream_buffer_keeps_only_the_trial_window():
     assert buf.stop(600)[1]["n_frames"] == 0
 
 
+def test_a_non_numeric_frame_is_an_error_and_the_columns_stay_aligned():
+    buf = StreamBuffer("tactile", STREAMS["tactile"])
+    buf.start(0)
+    buf.add(_frame(1, [1.0, 2.0]), t_ns=10)
+    buf.add(_frame(2, ["nope", "nope"]), t_ns=20)
+    buf.add(_frame(3, [3.0, 4.0]), t_ns=30)
+    arrays, summary = buf.stop(100)
+    assert arrays["tactile_data"].tolist() == [[1.0, 2.0], [3.0, 4.0]]
+    assert arrays["tactile_host_ns"].tolist() == [10, 30]
+    assert summary["n_errors"] == 1
+
+
+def test_a_ragged_stream_fails_its_trial_and_the_others_are_kept():
+    rec = WujiGloveRecorder()
+    ragged = StreamBuffer("A_ragged", STREAMS["tactile"])
+    good = StreamBuffer("A_tactile", STREAMS["tactile"])
+    rec.buffers = {("A", "ragged"): ragged, ("A", "tactile"): good}  # the failing one first
+    rec.start_acquisition(0, 0)
+    ragged.add(_frame(1, [1.0, 2.0]), t_ns=10)
+    ragged.add(_frame(2, [3.0]), t_ns=20)
+    good.add(_frame(1, [4.0, 5.0]), t_ns=10)
+    arrays, meta = rec.stop_acquisition(30)
+    assert arrays["A_tactile_data"].tolist() == [[4.0, 5.0]]
+    assert not any(key.startswith("A_ragged") for key in arrays)
+    assert meta["streams"]["A_tactile"]["n_frames"] == 1
+    assert meta["streams"]["A_ragged"]["ok"] is False
+    assert meta["streams"]["A_ragged"]["error"].startswith("ValueError")
+    assert not ragged._recording and not good._recording  # neither keeps recording
+    assert ragged._host == [] and ragged._fields == {}  # the failed trial's frames are freed
+
+
 class _Value:
     def __init__(self, value):
         self.value = value

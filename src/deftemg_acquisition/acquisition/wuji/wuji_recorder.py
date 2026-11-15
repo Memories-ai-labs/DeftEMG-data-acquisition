@@ -127,7 +127,9 @@ TOPICS = (
 
 
 class StreamBuffer:
-    """One stream's frames during a trial. ``add`` runs on the SDK's callback thread."""
+    """One stream's frames during a trial. ``add`` runs on the SDK's callback thread.
+
+    Frames of different shapes in one trial make ``stop`` raise: the stream fails that trial."""
 
     def __init__(
         self, name: str, convert: Callable[[Any], dict[str, Any]], topic: str | None = None
@@ -146,7 +148,7 @@ class StreamBuffer:
         self._host: list[int] = []
         self._dev: list[int] = []
         self._seq: list[int] = []
-        self._fields: dict[str, list] = {}
+        self._fields: dict[str, list[np.ndarray]] = {}
 
     def start(self, host_start_ns: int) -> None:
         with self._lock:
@@ -161,6 +163,7 @@ class StreamBuffer:
                 return
             try:
                 fields = self.convert(frame)
+                values = {key: np.asarray(value, dtype=np.float32) for key, value in fields.items()}
             except Exception:
                 self.n_errors += 1
                 if self.n_errors == 1:
@@ -170,8 +173,8 @@ class StreamBuffer:
             self._host.append(t_ns)
             self._dev.append(header.timestamp_us)
             self._seq.append(header.seq)
-            for key, value in fields.items():
-                self._fields.setdefault(key, []).append(value)
+            for key, array in values.items():
+                self._fields.setdefault(key, []).append(array)
 
     def error(self, message: str) -> None:
         with self._lock:
@@ -182,28 +185,33 @@ class StreamBuffer:
         """End the trial: arrays of the frames that arrived in [start, end] and a summary."""
         with self._lock:
             self._recording = False
-            host = np.asarray(self._host, dtype=np.int64)
-            keep = (host >= self._start_ns) & (host <= host_end_ns)
-            arrays = {
-                f"{self.name}_host_ns": host[keep],
-                f"{self.name}_dev_us": np.asarray(self._dev, dtype=np.int64)[keep],
-                f"{self.name}_seq": np.asarray(self._seq, dtype=np.int64)[keep],
-            }
-            for key, values in self._fields.items():
-                arrays[f"{self.name}_{key}"] = np.asarray(values, dtype=np.float32)[keep]
-            n = int(keep.sum())
-            span_s = (host_end_ns - self._start_ns) / 1e9
-            gaps = np.diff(arrays[f"{self.name}_host_ns"]) / 1e9
-            seq = arrays[f"{self.name}_seq"]
-            summary = {
-                "n_frames": n,
-                "rate_hz": round(n / span_s, 1) if span_s > 0 else 0.0,
-                "max_gap_s": round(float(gaps.max()), 4) if len(gaps) else None,
-                "n_seq_skipped": int(np.clip(np.diff(seq) - 1, 0, None).sum()) if n > 1 else 0,
-                "n_errors": self.n_errors,
-            }
-            self._clear()
-            return arrays, summary
+            try:
+                return self._arrays(host_end_ns)
+            finally:
+                self._clear()
+
+    def _arrays(self, host_end_ns: int) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+        host = np.asarray(self._host, dtype=np.int64)
+        keep = (host >= self._start_ns) & (host <= host_end_ns)
+        arrays = {
+            f"{self.name}_host_ns": host[keep],
+            f"{self.name}_dev_us": np.asarray(self._dev, dtype=np.int64)[keep],
+            f"{self.name}_seq": np.asarray(self._seq, dtype=np.int64)[keep],
+        }
+        for key, values in self._fields.items():
+            arrays[f"{self.name}_{key}"] = np.stack(values)[keep]
+        n = int(keep.sum())
+        span_s = (host_end_ns - self._start_ns) / 1e9
+        gaps = np.diff(arrays[f"{self.name}_host_ns"]) / 1e9
+        seq = arrays[f"{self.name}_seq"]
+        summary = {
+            "n_frames": n,
+            "rate_hz": round(n / span_s, 1) if span_s > 0 else 0.0,
+            "max_gap_s": round(float(gaps.max()), 4) if len(gaps) else None,
+            "n_seq_skipped": int(np.clip(np.diff(seq) - 1, 0, None).sum()) if n > 1 else 0,
+            "n_errors": self.n_errors,
+        }
+        return arrays, summary
 
 
 LIVE_STREAM_TYPE = "Glove"
@@ -375,7 +383,12 @@ class WujiGloveRecorder(Peripheral):
         arrays: dict[str, np.ndarray] = {}
         streams: dict[str, Any] = {}
         for buf in self.buffers.values():
-            a, summary = buf.stop(host_end_ns)
+            try:
+                a, summary = buf.stop(host_end_ns)
+            except Exception as e:
+                log.exception("glove %s: stopping the stream failed", buf.name)
+                streams[buf.name] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+                continue
             arrays.update(a)
             streams[buf.name] = summary
             if summary["n_frames"] == 0:
