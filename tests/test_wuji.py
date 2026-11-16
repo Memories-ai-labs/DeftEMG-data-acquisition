@@ -280,6 +280,113 @@ def test_failing_source_never_loses_the_emg(tmp_path):
     assert src.closed
 
 
+def test_a_stream_with_no_frames_is_not_ok():
+    rec = WujiGloveRecorder()
+    silent = StreamBuffer("A_silent", STREAMS["tactile"])
+    good = StreamBuffer("A_tactile", STREAMS["tactile"])
+    rec.buffers = {("A", "silent"): silent, ("A", "tactile"): good}
+    rec.start_acquisition(0, 0)
+    good.add(_frame(1, [1.0, 2.0]), t_ns=10)
+    arrays, meta = rec.stop_acquisition(20)
+    assert meta["ok"] is False and meta["error"] == "streams failed: A_silent"
+    assert meta["streams"]["A_silent"]["ok"] is False
+    assert meta["streams"]["A_silent"]["n_frames"] == 0
+    assert "ok" not in meta["streams"]["A_tactile"]
+    assert arrays["A_tactile_data"].tolist() == [[1.0, 2.0]]  # still saved
+    assert arrays["A_silent_host_ns"].tolist() == []
+
+
+def test_the_prompter_names_a_source_that_failed(tmp_path):
+    import pyqtgraph as pg
+
+    from deftemg_acquisition.tasks.app import TaskWindow
+    from deftemg_acquisition.tasks.sequence import Prompt, Sequence
+
+    seq = Sequence("a", "single", [Prompt(0.1, 0.1, ("thumb",), ("low",))])
+    pg.mkQApp()
+    with _session(tmp_path, [_Failing()]) as session:
+        win = TaskWindow(session, [(tmp_path / "a.json", seq)], tail_s=0.1)
+        assert "saved without" not in win.prompter.message
+        win.start_block()
+        win.end_block(completed=False)
+        assert "Last block saved without:\nglove: RuntimeError: glove unplugged" in (
+            win.prompter.message
+        )
+        win.close()
+
+
+def test_the_glove_status_names_silent_streams():
+    rec = WujiGloveRecorder()
+    tactile = StreamBuffer("A_tactile", STREAMS["tactile"], "tactile")
+    poses = StreamBuffer("A_tip_poses", STREAMS["tactile"], "tip_poses")
+    rec.buffers = {("A", "tactile"): tactile, ("A", "tip_poses"): poses}
+    assert rec.status() == "A: no data"  # nothing since subscribing
+    tactile.add(_frame(1, [1.0]), t_ns=host_ns())  # between trials: still counts
+    assert rec.status() == "A: no tip_poses"
+    poses.add(_frame(1, [1.0]), t_ns=host_ns())
+    assert rec.status() is None
+    tactile.last_ns -= int(2e9)  # silent for 2 s
+    assert rec.status() == "A: no tactile"
+    tactile.add(_frame(2, [1.0]), t_ns=host_ns())
+    rec.subscriptions = [NS(is_active=True), NS(is_active=False)]  # the SDK stopped one
+    assert rec.status() == "A: no tip_poses"
+
+
+class _Unwell(_Failing):
+    problem: str | None = "no data"
+
+    def start_acquisition(self, index, host_start_ns):
+        pass
+
+    def stop_acquisition(self, host_end_ns):
+        return {}, {}
+
+    def status(self):
+        return self.problem
+
+
+def test_the_session_collects_the_sources_status(tmp_path):
+    class Broken(_Unwell):
+        name = "other"
+
+        def status(self):
+            raise RuntimeError("bug")
+
+    src = _Unwell()
+    with _session(tmp_path, [src, Broken()]) as session:
+        assert session.source_status() == {
+            "glove": "no data",
+            "other": "status check failed: RuntimeError: bug",
+        }
+        src.problem = None
+        assert session.source_status() == {"other": "status check failed: RuntimeError: bug"}
+
+
+def test_the_prompter_shows_a_source_problem_during_a_block(tmp_path):
+    import pyqtgraph as pg
+
+    from deftemg_acquisition.tasks.app import TaskWindow
+    from deftemg_acquisition.tasks.sequence import Prompt, Sequence
+
+    seq = Sequence("a", "single", [Prompt(0.1, 0.1, ("thumb",), ("low",))])
+    pg.mkQApp()
+    src = _Unwell()
+    src.problem = None
+    with _session(tmp_path, [src]) as session:
+        win = TaskWindow(session, [(tmp_path / "a.json", seq)], tail_s=0.1)
+        win.check_sources()
+        assert win.prompter.warning == ""
+        win.start_block()
+        src.problem = "A: no data"  # the glove is unplugged during the block
+        win.check_sources()
+        assert win.running and win.prompter.warning == "glove: A: no data"
+        win.prompter.grab()  # the band is drawn
+        src.problem = None
+        win.check_sources()
+        assert win.prompter.warning == ""
+        win.close()
+
+
 def test_a_source_saves_its_files_with_the_session(tmp_path):
     class Saving(_Failing):
         def save_files(self, session_dir):

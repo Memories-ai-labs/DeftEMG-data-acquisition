@@ -197,6 +197,22 @@ class AcquisitionSession:
             info["sources"] = source_info
         (self.session_dir / "session.json").write_text(json.dumps(info, indent=2))
 
+    def source_status(self) -> dict[str, str]:
+        """Each open source's current problem (its optional ``status()``), by name; empty when
+        all is well. A status check that raises is reported as the problem."""
+        problems = {}
+        for src in self._opened_sources:
+            status = getattr(src, "status", None)
+            if status is None:
+                continue
+            try:
+                problem = status()
+            except Exception as e:
+                problem = f"status check failed: {type(e).__name__}: {e}"
+            if problem:
+                problems[src.name] = problem
+        return problems
+
     @property
     def source_id(self) -> str:
         """The ``source_id`` of the session's LSL streams (the viewer's ``--source``)."""

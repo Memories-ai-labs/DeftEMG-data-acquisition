@@ -145,6 +145,7 @@ class StreamBuffer:
         self._clear()
         self.n_received = 0  # whole session
         self.n_errors = 0  # frames that could not be converted, and SDK errors
+        self.last_ns = 0  # host time of the last frame, in a trial or not (0: none yet)
 
     def _clear(self) -> None:
         self._host: list[int] = []
@@ -163,6 +164,7 @@ class StreamBuffer:
     def add(self, frame: Any, t_ns: int) -> None:
         with self._lock:
             self.n_received += 1
+            self.last_ns = t_ns
             if not self._recording or self._failed:
                 return
             try:
@@ -325,6 +327,30 @@ class WujiGloveRecorder(Peripheral):
         log.info("connected wuji glove(s): %s", ", ".join(d.sn for d in devices))
         return self.gloves
 
+    def check_streams(self, max_silence_s: float = 1.0) -> list[str]:
+        """Streams with no frame for ``max_silence_s`` s, or none since subscribing."""
+        now = host_ns()
+        return [
+            buffer.name
+            for buffer in self.buffers.values()
+            if not buffer.last_ns or (now - buffer.last_ns) / 1e9 > max_silence_s
+        ]
+
+    def status(self) -> str | None:
+        """The gloves whose streams are silent (``check_streams``) or whose SDK subscription
+        has stopped, e.g. ``WG1…: no data`` (every stream) or ``WG1…: no tactile, tip_poses``."""
+        silent = set(self.check_streams())
+        missing: dict[str, list[str]] = {}
+        for i, ((sn, topic), buf) in enumerate(self.buffers.items()):
+            sub = self.subscriptions[i] if i < len(self.subscriptions) else None
+            if buf.name in silent or not getattr(sub, "is_active", True):
+                missing.setdefault(sn, []).append(topic)
+        parts = []
+        for sn, topics in missing.items():
+            n = sum(1 for s, _ in self.buffers if s == sn)
+            parts.append(f"{sn}: no data" if len(topics) == n else f"{sn}: no {', '.join(topics)}")
+        return "; ".join(parts) or None
+
     def subscribe(self) -> None:
         _disable_sdk_telemetry()  # before the import: the SDK reads these at import time
         from wuji_sdk import WujiException
@@ -419,8 +445,16 @@ class WujiGloveRecorder(Peripheral):
                 streams[buf.name] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
                 continue
             arrays.update(a)
-            streams[buf.name] = summary
             if summary["n_frames"] == 0:
+                summary = {"ok": False, "error": "no frames in this trial", **summary}
                 log.warning("glove %s: no frames in this trial", buf.name)
+            streams[buf.name] = summary
+
         self.acquiring = False
-        return arrays, {"streams": streams}
+        failed = sorted(name for name, s in streams.items() if s.get("ok") is False)
+
+        metadata: dict[str, Any] = {"streams": streams}
+        if failed:
+            metadata["ok"] = False
+            metadata["error"] = f"streams failed: {', '.join(failed)}"
+        return arrays, metadata

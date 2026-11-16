@@ -27,3 +27,8 @@ class Peripheral(ABC):
         """Write files to keep with the session, beside ``session.json``: called once, after
         ``open``, with the session folder made. None by default."""
         return
+
+    def status(self) -> str | None:
+        """A problem to show the operator now (e.g. no data arriving), or None if all is well.
+        Asked about once a second from the GUI thread, so it must be quick."""
+        return None
