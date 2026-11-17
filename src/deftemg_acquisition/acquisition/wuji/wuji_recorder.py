@@ -39,7 +39,6 @@ from .calibration import calibrate, use_user
 
 log = logging.getLogger(__name__)
 
-SOURCE_NAME = "glove"
 DEVICE_NAME = "deftemg_glove"  # local alias for the SDK connection
 
 
@@ -291,7 +290,7 @@ class WujiGloveRecorder(Peripheral):
         sn: single or multiple gloves.
     """
 
-    name = SOURCE_NAME
+    name = "wuji_glove"
 
     def __init__(self, sn: str | Iterable[str] | None = None):
         self.sn = (sn,) if isinstance(sn, str) else tuple(sn) if sn is not None else None
@@ -299,11 +298,9 @@ class WujiGloveRecorder(Peripheral):
         self.buffers: dict[tuple[str, str], StreamBuffer] = {}  # by (sn, topic)
         self.subscriptions: list[Any] = []
         self.calibration: dict[str, Any] = {}
-        # by serial number: (file name in the session folder, URDF) of the calibrated hand
-        # model, read at once: the SDK keeps one file per hand side, replaced by the next one
         self.hand_models: dict[str, tuple[str, str]] = {}
         self.manager = None  # set when this recorder made the SDK connection
-        self.lsl_publisher = LiveGlove(source_id=SOURCE_NAME)
+        self.lsl_publisher = LiveGlove(source_id=f"{self.name}_{self.sn}")
 
     def initialize(self) -> list[Any]:
         _disable_sdk_telemetry()  # before the import: the SDK reads these at import time
@@ -385,7 +382,7 @@ class WujiGloveRecorder(Peripheral):
                 self.calibration[sn] = calibrate(glove, side)
                 urdf = self.calibration[sn].get("calibrated_urdf")
                 if urdf:
-                    name = f"{SOURCE_NAME}_{sn}_{side}_hand.urdf"
+                    name = f"{self.name}_{sn}_{side}_hand.urdf"
                     self.hand_models[sn] = (name, Path(urdf).read_text())
             self.subscribe()
         except BaseException:  # also Ctrl+C during the calibration: disconnect the gloves
@@ -405,7 +402,7 @@ class WujiGloveRecorder(Peripheral):
         return info
 
     def save_files(self, session_dir: Path) -> None:
-        """Each glove's calibrated hand model, as ``glove_<sn>_<side>_hand.urdf``."""
+        """Each glove's calibrated hand model, as ``<name>_<sn>_<side>_hand.urdf``."""
         for name, urdf in self.hand_models.values():
             (session_dir / name).write_text(urdf)
 

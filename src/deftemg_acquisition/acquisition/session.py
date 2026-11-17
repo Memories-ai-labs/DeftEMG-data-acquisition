@@ -23,14 +23,13 @@ from typing import Any
 
 import numpy as np
 
+from deftemg_acquisition.acquisition.armband.device import Armband, DeviceError
+from deftemg_acquisition.acquisition.armband.protocol import STALL_GAP_S, FilterStatus
+from deftemg_acquisition.acquisition.armband.recorder import TrialRecorder
+from deftemg_acquisition.acquisition.peripherals.peripherals import Peripheral
 from deftemg_acquisition.analysis.filtering import EmgFilter
 from deftemg_acquisition.clock import HOST_CLOCK, anchor, host_ns
 from deftemg_acquisition.system import keep_awake
-
-from .armband.device import Armband, DeviceError
-from .armband.protocol import STALL_GAP_S, FilterStatus
-from .armband.recorder import TrialRecorder
-from .peripherals.peripherals import Peripheral as TrialSource
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +96,7 @@ class AcquisitionSession:
     trial only selects which bytes are saved. Otherwise each trial sends StartDataAcq and
     StopDataAcq. If ``live_stream`` is set, all data and trial markers also go out over LSL.
 
-    ``sources``: extra devices recorded with every trial (:class:`~.sources.TrialSource`),
+    ``sources``: extra devices recorded with every trial (:class:`Peripheral`),
     e.g. a data glove; their arrays go into the same ``.npz``, prefixed with their name. A
     source with ``save_files(session_dir)`` writes its own files into the session folder.
     """
@@ -106,15 +105,15 @@ class AcquisitionSession:
         self,
         config: SessionConfig,
         device: Armband | None = None,
-        sources: list[TrialSource] | tuple[TrialSource, ...] = (),
+        sources: list[Peripheral] | tuple[Peripheral, ...] = (),
     ):
         self.config = config
         self.device = device or Armband(config.port)
-        self.sources = list(sources)
+        self.sources: list[Peripheral] = list(sources)
         names = [src.name for src in self.sources]
         if len(set(names)) != len(names):
             raise ValueError(f"source names must be unique: {names}")
-        self._opened_sources: list[TrialSource] = []
+        self._opened_sources: list[Peripheral] = []
         name = config.session_name or datetime.now().strftime("%Y%m%d-%H%M%S")
         self.session_dir = Path(config.data_dir) / name
         self.filter_status: FilterStatus | None = None

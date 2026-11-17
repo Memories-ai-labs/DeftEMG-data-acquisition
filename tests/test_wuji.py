@@ -213,12 +213,12 @@ def test_the_calibrated_hand_model_is_kept_as_it_was(fake_sdk, monkeypatch, tmp_
     fake_sdk.found.update({"A": "left"})
     rec = WujiGloveRecorder()
     info = rec.open()
-    assert info["A"]["hand_model_file"] == "glove_A_left_hand.urdf"
+    assert info["A"]["hand_model_file"] == "wuji_glove_A_left_hand.urdf"
     urdf.write_text("<robot name='next calibration'/>")  # the SDK replaces its file
     session_dir = tmp_path / "session"
     session_dir.mkdir()
     rec.save_files(session_dir)
-    assert (session_dir / "glove_A_left_hand.urdf").read_text() == "<robot name='A'/>"
+    assert (session_dir / "wuji_glove_A_left_hand.urdf").read_text() == "<robot name='A'/>"
     rec.close()
 
 
