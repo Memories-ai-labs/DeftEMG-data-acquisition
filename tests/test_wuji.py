@@ -222,6 +222,36 @@ def test_the_calibrated_hand_model_is_kept_as_it_was(fake_sdk, monkeypatch, tmp_
     rec.close()
 
 
+def test_a_failed_connection_disconnects_the_glove_already_open(fake_sdk, monkeypatch):
+    import wuji_sdk
+
+    fake_sdk.found.update({"A": "left", "B": "left"})
+    connect = wuji_sdk.SdkManager.connect
+
+    def fail_the_second(sn, device_name):
+        if sn == "B":
+            raise RuntimeError("usb")
+        return connect(sn, device_name)
+
+    monkeypatch.setattr(wuji_sdk.SdkManager, "connect", fail_the_second)
+    with pytest.raises(RuntimeError, match="usb"):
+        WujiGloveRecorder().open()
+    assert not fake_sdk.connected  # glove A was connected, then disconnected
+
+
+def test_a_failure_while_reading_the_glove_closes_it(fake_sdk, monkeypatch):
+    fake_sdk.found.update({"A": "left"})
+    fake_sdk.offers.intersection_update({"tactile"})
+
+    def fail(self):
+        raise RuntimeError("firmware")
+
+    monkeypatch.setattr(_FakeGlove, "version", fail)
+    with pytest.raises(RuntimeError, match="firmware"):
+        WujiGloveRecorder().open()
+    assert not fake_sdk.connected
+
+
 def test_glove_sn_not_found_is_an_error(fake_sdk):
     fake_sdk.found.update({"A": "left"})
     with pytest.raises(RuntimeError, match="glove C not found; found: A"):

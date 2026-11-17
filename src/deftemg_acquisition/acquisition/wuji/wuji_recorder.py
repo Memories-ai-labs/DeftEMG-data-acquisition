@@ -318,9 +318,15 @@ class WujiGloveRecorder(Peripheral):
         if not devices:
             raise RuntimeError("wuji: no glove found")
         self.manager = manager
-        self.gloves = [
-            manager.connect(sn=d.sn, device_name=f"{DEVICE_NAME}_{d.sn}") for d in devices
-        ]
+        self.gloves = []
+        try:
+            for device in devices:
+                self.gloves.append(
+                    manager.connect(sn=device.sn, device_name=f"{DEVICE_NAME}_{device.sn}")
+                )
+        except BaseException:  # a later glove failed: disconnect the ones already connected
+            self.close()
+            raise
         log.info("connected wuji glove(s): %s", ", ".join(d.sn for d in devices))
         return self.gloves
 
@@ -385,21 +391,21 @@ class WujiGloveRecorder(Peripheral):
                     name = f"{self.name}_{sn}_{side}_hand.urdf"
                     self.hand_models[sn] = (name, Path(urdf).read_text())
             self.subscribe()
+            info = {}
+            for glove in self.gloves:
+                sn = glove.serial_number
+                info[sn] = {
+                    "hand_side": glove.hand_side().get(),
+                    "firmware": glove.version().get(),
+                    "streams": [t for s, t in self.buffers if s == sn],
+                    "calibration": self.calibration[sn],
+                }
+                if sn in self.hand_models:
+                    info[sn]["hand_model_file"] = self.hand_models[sn][0]
+            return info
         except BaseException:  # also Ctrl+C during the calibration: disconnect the gloves
             self.close()
             raise
-        info = {}
-        for glove in self.gloves:
-            sn = glove.serial_number
-            info[sn] = {
-                "hand_side": glove.hand_side().get(),
-                "firmware": glove.version().get(),
-                "streams": [t for s, t in self.buffers if s == sn],
-                "calibration": self.calibration[sn],
-            }
-            if sn in self.hand_models:
-                info[sn]["hand_model_file"] = self.hand_models[sn][0]
-        return info
 
     def save_files(self, session_dir: Path) -> None:
         """Each glove's calibrated hand model, as ``<name>_<sn>_<side>_hand.urdf``."""
