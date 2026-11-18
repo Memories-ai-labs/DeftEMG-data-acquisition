@@ -37,6 +37,10 @@ requires-pixi = ">=0.84"
 [tool.pixi.pypi-dependencies]
 deftemg-acquisition = { path = ".", editable = true }
 
+[tool.pixi.environments]
+default = ["dev"]
+wuji = { features = ["dev", "wuji"], platforms = ["linux-64"] }
+
 [tool.pixi.tasks]
 test = "pytest"
 lint = "ruff check ."
@@ -68,8 +72,8 @@ pyopengl = ">=3.1.10,<4"  # the GPU-drawn EMG traces check the renderer (viz.gpu
 pytest = ">=9.1.1,<10"
 ruff = ">=0.17.0,<0.18"
 
-[tool.pixi.environments]
-default = ["dev"]
+[tool.pixi.feature.wuji.pypi-dependencies]
+deftemg-acquisition = { path = ".", editable = true, extras = ["wuji"] }
 
 [tool.ruff]
 line-length = 100
