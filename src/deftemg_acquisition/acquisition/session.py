@@ -169,7 +169,7 @@ class AcquisitionSession:
                 source_info[src.name] = src.open()
                 self._opened_sources.append(src)
                 log.info("source %s ready: %s", src.name, source_info[src.name])
-        except Exception:
+        except BaseException:  # KeyboardInterrupt too: Ctrl+C while a source is opening
             self._shutdown()
             raise
         log.info("armband ready on %s: %s", self.device.port, self.filter_status)
@@ -179,7 +179,7 @@ class AcquisitionSession:
                 save_files = getattr(src, "save_files", None)
                 if save_files is not None:
                     save_files(self.session_dir)
-        except Exception:
+        except BaseException:
             self._shutdown()
             raise
         info = {

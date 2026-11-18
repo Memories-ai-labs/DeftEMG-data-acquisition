@@ -9,6 +9,7 @@ replaces the last.
 
 import asyncio
 import logging
+import signal
 import threading
 from typing import Any
 
@@ -172,12 +173,16 @@ class CalibrationWindow(QtWidgets.QWidget):
         else:
             super().keyPressEvent(ev)
 
+    def request_cancel(self) -> None:
+        """Ask the SDK calibration to stop. The window closes once the worker reports back."""
+        self._cancel = True
+        if self._loop is not None and self._task is not None:
+            self._loop.call_soon_threadsafe(self._task.cancel)
+        self.state.setText("Cancelling…")
+
     def closeEvent(self, ev) -> None:
         if self.result is None:  # still running: cancel, close once the worker reports back
-            self._cancel = True
-            if self._loop is not None and self._task is not None:
-                self._loop.call_soon_threadsafe(self._task.cancel)
-            self.state.setText("Cancelling…")
+            self.request_cancel()
             ev.ignore()
             return
         super().closeEvent(ev)
@@ -217,15 +222,39 @@ def diagnostic_messages(fb: dict[str, Any]) -> list[str]:
 def calibrate(glove: Any, side: str, *, skip_constraints: bool = False,
               timeout_s: float = 900.0) -> dict[str, Any]:  # fmt: skip
     """Run the SDK's hand model calibration on one connected glove in a ``CalibrationWindow``
-    (blocks until it is done or cancelled; raises if it failed or was cancelled)."""
+    (blocks until it is done or cancelled; raises if it failed or was cancelled).
+
+    Ctrl+C in the terminal quits this window and raises ``KeyboardInterrupt``. PyQt otherwise
+    prints that interrupt from whichever slot was running and leaves this loop going.
+    """
     pg.mkQApp("Wuji Glove calibration")
     win = CalibrationWindow(glove, side, skip_constraints, timeout_s)
     loop = QtCore.QEventLoop()
     win.done.connect(loop.quit, QtCore.Qt.QueuedConnection)  # after the window took the result
-    win.show()
-    win.raise_()
-    win.activateWindow()
-    loop.exec()
+    interrupted = False
+
+    def on_sigint(*args) -> None:
+        nonlocal interrupted
+        interrupted = True
+        win.request_cancel()
+        loop.quit()
+
+    previous = signal.signal(signal.SIGINT, on_sigint)
+    awake = QtCore.QTimer(win)  # a Python callback, so the interpreter notices Ctrl+C
+    awake.timeout.connect(lambda: None)
+    awake.start(200)
+    try:
+        win.show()
+        win.raise_()
+        win.activateWindow()
+        loop.exec()
+    finally:
+        awake.stop()
+        signal.signal(signal.SIGINT, previous)
+    if interrupted:
+        win.result = asyncio.CancelledError()
+        win.close()
+        raise KeyboardInterrupt
     if isinstance(win.result, asyncio.CancelledError):
         raise RuntimeError(f"wuji {side}: calibration cancelled")
     if isinstance(win.result, BaseException):
