@@ -269,6 +269,8 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
     if viewer_args is not None and args.no_stream:
         print("--no-stream: no viewer (it reads the LSL stream)")
     elif viewer_args is not None:  # side by side: the prompter on the left, the viewer right
+        if args.wuji:
+            viewer_args = [*viewer_args, "--glove"]
         from deftemg_acquisition.viz.screen import geometry_args, snap, split_screen
 
         fit_font(pg.mkQApp("Prompter"))
@@ -302,6 +304,8 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
             win.raise_()
             win.activateWindow()
             app.exec()
+    except KeyboardInterrupt:
+        sys.exit(130)  # Ctrl+C during calibration: the session has already shut down
     finally:
         if viewer is not None:
             viewer.terminate()

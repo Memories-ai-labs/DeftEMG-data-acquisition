@@ -438,6 +438,44 @@ def test_source_open_failure_aborts_the_session(tmp_path):
             pass
 
 
+def test_ctrl_c_while_opening_shuts_the_armband_down(tmp_path):
+    class Stopping(_Failing):
+        def open(self):
+            raise KeyboardInterrupt
+
+    session = _session(tmp_path, [Stopping()])
+    with pytest.raises(KeyboardInterrupt):
+        session.open()  # __enter__ would not run __exit__ if this escaped open()
+    assert session.device._ser is None
+
+
+def test_ctrl_c_quits_calibration():
+    import asyncio
+    import signal
+    import threading
+
+    import pyqtgraph as pg
+    from pyqtgraph.Qt import QtCore
+
+    from deftemg_acquisition.acquisition.wuji.calibration import calibrate
+
+    class Glove:
+        serial_number = "A"
+
+        async def calibrate(self, **_kwargs):
+            await asyncio.sleep(30)
+            return {"calibrated_urdf": "unused"}
+
+    pg.mkQApp()
+    QtCore.QTimer.singleShot(50, lambda: signal.raise_signal(signal.SIGINT))
+    with pytest.raises(KeyboardInterrupt):
+        calibrate(Glove(), "left", timeout_s=1)
+    for thread in threading.enumerate():
+        if thread.name == "wuji-calibrate":
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+
+
 def test_point_cloud_converter():
     from deftemg_acquisition.acquisition.wuji.wuji_recorder import CLOUD_POINTS
 

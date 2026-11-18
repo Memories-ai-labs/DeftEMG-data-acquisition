@@ -135,9 +135,11 @@ def main() -> None:
     viewer = None
     if args.viewer:
         source = ["--source", source_id_for(device.port)] if device is not None else []
+        glove = ["--glove"] if args.wuji else []
         viewer = subprocess.Popen(
-            [sys.executable, "-m", "deftemg_acquisition.viz.viewer", "--arm", args.arm, *source]
-        )
+            [sys.executable, "-m", "deftemg_acquisition.viz.viewer", "--arm", args.arm,
+             *glove, *source]
+        )  # fmt: skip
     try:
         with AcquisitionSession(config, device=device, sources=sources) as session:
             print(f"Saving to {session.session_dir}")
@@ -150,6 +152,8 @@ def main() -> None:
                         session.end_trial()
                     elif key == QUIT_KEY:
                         break
+    except KeyboardInterrupt:
+        sys.exit(130)  # Ctrl+C during calibration: the session has already shut down
     finally:
         if viewer is not None:
             viewer.terminate()

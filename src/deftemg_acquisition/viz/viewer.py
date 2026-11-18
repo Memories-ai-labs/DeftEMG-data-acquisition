@@ -11,9 +11,9 @@ out to sit right of the prompter (the band RMS on the left of the EMG, the contr
 rows); ``--geometry X Y W H``: where its window goes, frame included (``viz.screen``:
 ``prompter --viewer`` puts it on the right of the screen, the prompter on the left).
 
-When a Wuji Glove streams too (``acquire --wuji`` or ``prompter --wuji``), the
-glove panels appear in the side column: 3D tactile hand, joint angles and tactile zone means
-(``viz.glove``).
+``--glove`` adds the Wuji Glove panels to the side column: 3D tactile hand, joint angles
+and tactile zone means (``viz.glove``). ``acquire --wuji`` and ``prompter --wuji`` pass it
+to the viewer they open. Without it the viewer does not build those panels.
 
 ``--source``: the session to show when several publish (on this computer and others on the
 network), by its ``source_id`` or its computer's host name; without it, one on this computer.
@@ -192,7 +192,7 @@ class Viewer(QtWidgets.QMainWindow):
     def __init__(
         self, window_s: float, spectrum_s: float, arm: str = "right", compact: bool = False,
         beside: bool = False, panels: list[ViewerPanel] | tuple[ViewerPanel, ...] = (),
-        glove: bool = True,
+        glove: bool = False,
     ):  # fmt: skip
         """``compact``: the EMG traces and the band RMS only, with their controls (no spectrum,
         IMU or status line). ``beside`` (right of the prompter): the side panels left of the
@@ -437,6 +437,11 @@ def parser() -> argparse.ArgumentParser:
     )
     ap.add_argument("--compact", action="store_true", help="the EMG traces and band RMS only")
     ap.add_argument(
+        "--glove", action="store_true",
+        help="Wuji Glove panels (3D tactile hand, joint angles, tactile zones); "
+             "acquire --wuji and prompter --wuji pass this",
+    )  # fmt: skip
+    ap.add_argument(
         "--beside", action="store_true",
         help="right of the prompter: side panels on the left, controls on two rows",
     )  # fmt: skip
@@ -464,6 +469,7 @@ def run(args: argparse.Namespace, panels: list[ViewerPanel] | tuple = ()) -> Non
         compact=args.compact,
         beside=args.beside,
         panels=panels,
+        glove=args.glove,
     )
     viewer.show()
     if args.geometry:
