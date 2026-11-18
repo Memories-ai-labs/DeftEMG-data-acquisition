@@ -23,7 +23,7 @@ import numpy as np
 import pyqtgraph as pg
 from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 
-from deftemg_acquisition.acquisition.protocol import BAND_SLOTS, N_EMG_CHANNELS
+from deftemg_acquisition.acquisition.armband.protocol import BAND_SLOTS, N_EMG_CHANNELS
 from deftemg_acquisition.viz.screen import font_points, font_px
 
 PUCK_DEG = 90.0  # puck at the top (dorsal), angles counterclockwise from the right (screen)

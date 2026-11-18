@@ -91,7 +91,7 @@ def test_prompter_trial_with_sync_patch(tmp_path):
     from pyqtgraph.Qt import QtCore
 
     from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-    from deftemg_acquisition.acquisition.sim import SimulatedArmband
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
     from deftemg_acquisition.tasks.app import TaskWindow
     from deftemg_acquisition.tasks.sequence import Prompt, Sequence
 
@@ -153,7 +153,7 @@ def test_session_reports_stall(tmp_path):
     import time
 
     from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-    from deftemg_acquisition.acquisition.sim import SimulatedArmband
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 
     sim = SimulatedArmband()
     config = SessionConfig(data_dir=tmp_path, session_name="s", live_stream=False)

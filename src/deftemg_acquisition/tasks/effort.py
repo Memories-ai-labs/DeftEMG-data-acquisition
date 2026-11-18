@@ -27,7 +27,7 @@ from pathlib import Path
 
 import numpy as np
 
-from deftemg_acquisition.acquisition import protocol as P
+from deftemg_acquisition.acquisition.armband import protocol as P
 from deftemg_acquisition.analysis.filtering import EmgFilter
 from deftemg_acquisition.data.calibration import Calibration, calibration_from_trial
 from deftemg_acquisition.data.trials import load_trial
@@ -111,7 +111,8 @@ class EffortMeter:
         fs_hz: float = P.EMG_RATE_HZ,
         max_queued_chunks: int = 5000,
     ):
-        from deftemg_acquisition.acquisition.live import LiveFilter  # lazily: live.py loads liblsl
+        # lazily: live.py loads liblsl
+        from deftemg_acquisition.acquisition.armband.live import LiveFilter
 
         self.decoder = P.StreamDecoder(filter_enabled)
         self.emg_filter = emg_filter

@@ -22,7 +22,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig, subjects
+from deftemg_acquisition.acquisition import (
+    AcquisitionSession,
+    Armband,
+    SessionConfig,
+    subjects,
+    wuji,
+)
 from deftemg_acquisition.acquisition.session import source_id_for
 
 START_KEY, END_KEY, QUIT_KEY = "s", "e", "q"
@@ -82,6 +88,7 @@ def main() -> None:
     )  # fmt: skip
     ap.add_argument("-v", "--verbose", action="store_true")
     subjects.add_arguments(ap)
+    wuji.add_arguments(ap)
     args = ap.parse_args()
     donning = subjects.donning_from_args(args, args.data_dir)
 
@@ -91,7 +98,7 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    from deftemg_acquisition.acquisition.keyboard import cbreak_keys
+    from deftemg_acquisition.cli.keyboard import cbreak_keys
 
     config = SessionConfig(
         port=args.port,
@@ -112,7 +119,7 @@ def main() -> None:
     )
     device = None
     if args.simulate:
-        from deftemg_acquisition.acquisition.sim import SimulatedArmband
+        from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
 
         device = Armband("simulated", ser=SimulatedArmband())
     elif args.remote:
@@ -123,14 +130,18 @@ def main() -> None:
         if args.per_trial_acq:
             sys.exit("--remote streams throughout: no --per-trial-acq")
 
+    sources = wuji.sources_from_args(args)
+
     viewer = None
     if args.viewer:
         source = ["--source", source_id_for(device.port)] if device is not None else []
+        glove = ["--glove"] if args.wuji else []
         viewer = subprocess.Popen(
-            [sys.executable, "-m", "deftemg_acquisition.viz.viewer", "--arm", args.arm, *source]
-        )
+            [sys.executable, "-m", "deftemg_acquisition.viz.viewer", "--arm", args.arm,
+             *glove, *source]
+        )  # fmt: skip
     try:
-        with AcquisitionSession(config, device=device) as session:
+        with AcquisitionSession(config, device=device, sources=sources) as session:
             print(f"Saving to {session.session_dir}")
             print(f"[{START_KEY}] start trial   [{END_KEY}] end trial   [{QUIT_KEY}] quit")
             with cbreak_keys() as keys:
@@ -141,6 +152,8 @@ def main() -> None:
                         session.end_trial()
                     elif key == QUIT_KEY:
                         break
+    except KeyboardInterrupt:
+        sys.exit(130)  # Ctrl+C during calibration: the session has already shut down
     finally:
         if viewer is not None:
             viewer.terminate()

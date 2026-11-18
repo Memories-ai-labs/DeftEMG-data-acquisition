@@ -26,7 +26,7 @@ from dataclasses import asdict, dataclass
 
 import numpy as np
 
-from deftemg_acquisition.acquisition.protocol import EMG_RATE_HZ, STALL_GAP_S
+from deftemg_acquisition.acquisition.armband.protocol import EMG_RATE_HZ, STALL_GAP_S
 
 
 def emg_segments(host_ns: np.ndarray, emg_seq: np.ndarray | None = None) -> np.ndarray:

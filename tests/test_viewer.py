@@ -12,6 +12,13 @@ def _horizontal_split(viewer):
     return next(s for s in splits if s.orientation() == QtCore.Qt.Horizontal)
 
 
+def test_glove_panels_are_off_unless_asked():
+    from deftemg_acquisition.viz.viewer import parser
+
+    assert parser().parse_args([]).glove is False
+    assert parser().parse_args(["--glove"]).glove is True
+
+
 def test_viewer_layouts():
     import pyqtgraph as pg
 
@@ -20,6 +27,7 @@ def test_viewer_layouts():
     pg.mkQApp()
     full = Viewer(5.0, 2.0)
     assert full.spectrum is not None and full.imu is not None
+    assert full.glove_panels == []  # armband-only: no glove panels, no stream search
     assert _horizontal_split(full).widget(0) is full.traces  # the side panels on the right
     assert full.controls.layout().count() == 1 and full.controls.spec_combo.parent() is not None
 
@@ -30,6 +38,7 @@ def test_viewer_layouts():
 
     compact = Viewer(5.0, 2.0, compact=True, beside=True)
     assert compact.spectrum is None and compact.imu is None and compact.imu_plots is None
+    assert compact.glove_panels == []
     assert _horizontal_split(compact).widget(1) is compact.traces  # band RMS on the left
     assert compact.controls.layout().count() == 2  # controls on two rows
     assert compact.controls.spec_combo.parent() is None  # no spectrum, no spectrum choice

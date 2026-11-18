@@ -673,9 +673,14 @@ sample was taken.
 
 ## Layout
 
-- `src/deftemg_acquisition/acquisition/`: serial protocol, armband driver, recorder, session,
-  subject / donning ids, LSL streaming, simulator, recordings replayed as the armband, the
-  armband on another computer (`remote`).
+- `src/deftemg_acquisition/acquisition/`: the recording session, extra-device sources,
+  subject / donning ids, shared LSL helpers, the armband on another computer (`remote`).
+  - `armband/`: serial protocol, armband driver, trial recorder, live LSL streaming,
+    simulator, recordings replayed as the armband.
+  - `wuji/`: Wuji Glove recording as a session source (SDK, simulated glove, MCAP replay).
+    Before importing `wuji-sdk`, the recorder sets `WUJI_TELEMETRY_DISABLE`,
+    `WUJI_TELEMETRY_NO_UPLOAD` and `WUJI_DEVICE_TELEMETRY_DISABLE`, so the SDK does not
+    collect or upload usage or device telemetry (including a fitted calibration).
 - `src/deftemg_acquisition/viz/`: live viewer, replay, the plot panels they share, and window
   placement.
 - `src/deftemg_acquisition/tasks/`: prompt sequences, prompter drawing, task window, effort
@@ -684,7 +689,8 @@ sample was taken.
 - `src/deftemg_acquisition/data/`: trial loading, labels, press timing, calibration,
   synthetic sessions.
 - `src/deftemg_acquisition/cli/`: command-line entry points (`acquire`, `prompter`,
-  `make_sequences`, `check_timing`, `filter_emg`, `make_synthetic`, `serve`).
+  `make_sequences`, `check_timing`, `filter_emg`, `make_synthetic`, `serve`), and the terminal
+  key input `acquire` reads.
 - `protocols/`: prompt sequence files.
 - `examples/`: a synthetic example session.
 - `tests/`: pytest tests (no hardware needed).

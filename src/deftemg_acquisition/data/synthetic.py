@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 from scipy import signal
 
-from deftemg_acquisition.acquisition.protocol import BAND_SLOTS, EMG_RATE_HZ, N_EMG_CHANNELS
+from deftemg_acquisition.acquisition.armband.protocol import BAND_SLOTS, EMG_RATE_HZ, N_EMG_CHANNELS
 from deftemg_acquisition.tasks.sequence import (
     CALIBRATION_REPS,
     DIGITS,
