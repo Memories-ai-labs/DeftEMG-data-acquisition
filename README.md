@@ -653,6 +653,14 @@ Key arrays in the trial `.npz`:
   `trials.jsonl` and `clock_anchor` in `session.json`; helper: `deftemg_acquisition.clock`.
 - The armband's `device_time_ms` is set from the wall clock at trial start.
 
+**Over a wireless link.** Arrival time carries the link's delay and jitter (here, up to a second
+at its worst), so a trial that has link timing packets (`marker_*`) is aligned offline instead:
+`pixi run align-link data/raw/<session>` writes `<trial>_aligned.npz` with `emg_t_ns` and
+`imu_t_ns`, each packet's time on the computer's clock, and prints the scatter of each fit.
+Older trials are decoded again from their `.bin`. Method and its limits: `analysis/link_alignment.py`
+(the link's own packet count numbers the packets; a packet lost before the link is not numbered).
+Every band of a recording shares the computer's clock, so aligned bands can be resampled together.
+
 For analysis, use `emg_time_ns` from `_timing.npz`: one smooth time per sample fitted over the
 trial. It reflects arrival time; subtract `usb_delay_ms_median` (~1–3 ms) for the time the
 sample was taken.
