@@ -98,6 +98,62 @@ class LiveFilter:
         return y
 
 
+class GapFiller:
+    """Fills the EMG samples missing between packets, so the live stream keeps its time axis.
+
+    Packets lost on a wireless link leave a gap of a few samples. A filter run across the gap
+    sees the signal jump, and the mains hum's phase with it, and rings on every channel at once.
+    The missing samples are interpolated instead (a straight line between the samples either
+    side), which a filter takes as a smooth continuation. A gap longer than ``max_fill`` samples
+    is not filled; ``long_gap`` then says so, for the caller to restart its filter.
+
+    EMG and IMU packets share one sequence counter, so the samples missing before an EMG packet
+    are its sequence step less one, less the IMU packets that sit in between. A lost IMU packet
+    counts as a lost EMG sample, one in ten at most of the gap.
+    """
+
+    def __init__(self, max_fill: int = 40):
+        self.max_fill = max_fill
+        self.reset()
+
+    def reset(self) -> None:
+        self._last_seq: int | None = None  # last EMG packet's sequence number
+        self._last_uv: np.ndarray | None = None
+        self._imu_since = 0  # IMU packets since that one
+
+    def __call__(self, d: P.DecodedStream) -> tuple[np.ndarray, bool]:
+        """``d.emg_uv`` with the missing samples filled in, and whether a gap was too long."""
+        seq, uv = d.emg_seq, d.emg_uv
+        imu = d.imu_seq
+        if len(seq) == 0:
+            self._imu_since += len(imu)
+            return uv, False
+        prev_seq = np.concatenate(
+            [[self._last_seq if self._last_seq is not None else seq[0] - 1], seq[:-1]]
+        )
+        between = np.searchsorted(imu, seq) - np.searchsorted(imu, prev_seq, side="right")
+        between[0] += self._imu_since if self._last_seq is not None else 0
+        missing = np.maximum(seq - prev_seq - 1 - between, 0)
+        if self._last_seq is None:
+            missing[0] = 0
+        long_gap = bool((missing > self.max_fill).any())
+        fill = np.flatnonzero((missing > 0) & (missing <= self.max_fill))
+        if fill.size:
+            before = np.vstack([self._last_uv if self._last_uv is not None else uv[:1], uv[:-1]])
+            pieces, at = [], 0
+            for k in fill:
+                m = int(missing[k])
+                pieces.append(uv[at:k])
+                w = (np.arange(1, m + 1) / (m + 1))[:, None]
+                pieces.append(before[k] + (uv[k] - before[k]) * w)
+                at = k
+            pieces.append(uv[at:])
+            uv = np.concatenate(pieces)
+        self._last_seq, self._last_uv = int(seq[-1]), d.emg_uv[-1].copy()
+        self._imu_since = int(len(imu) - np.searchsorted(imu, seq[-1], side="right"))
+        return uv, long_gap
+
+
 class LiveStreamer:
     """Armband sink that decodes chunks on a worker thread and pushes them to LSL outlets."""
 
@@ -112,6 +168,7 @@ class LiveStreamer:
         self.decoder = P.StreamDecoder(filter_enabled)
         self.emg_filter = None if emg_filter is None else LiveFilter(emg_filter)
         self._last_t_ns = 0  # receive time of the previous chunk
+        self._filler = GapFiller()
         # (receive time, bytes, chunks discarded before this one)
         self._queue: queue.Queue[tuple[int, bytes, int] | None] = queue.Queue(max_queued_chunks)
         self._worker: threading.Thread | None = None
@@ -165,6 +222,7 @@ class LiveStreamer:
                 log.warning("live stream fell behind, %d chunks discarded", discarded)
                 discarded_seen = discarded
                 self.decoder.reset()
+                self._filler.reset()
                 if self.emg_filter is not None:
                     self.emg_filter.reset()
             try:
@@ -179,7 +237,10 @@ class LiveStreamer:
             self.emg_filter.reset()  # the stream was interrupted: start over from the next sample
         self._last_t_ns = t_ns
         if len(d.emg_seq):
-            emg = d.emg_uv if self.emg_filter is None else self.emg_filter(d.emg_uv)
+            emg_uv, long_gap = self._filler(d)
+            if long_gap and self.emg_filter is not None:
+                self.emg_filter.reset()  # too much missing to bridge: start over after it
+            emg = emg_uv if self.emg_filter is None else self.emg_filter(emg_uv)
             self._emg.push_chunk(emg.astype(np.float32), ts)
         if len(d.imu_seq):
             imu = np.column_stack([

@@ -12,6 +12,7 @@ from deftemg_acquisition.analysis.filtering import filter_emg
 
 pylsl = pytest.importorskip("pylsl")
 from deftemg_acquisition.acquisition.armband.live import (  # noqa: E402 (needs liblsl)
+    GapFiller,
     LiveFilter,
     LiveStreamer,
     describe_filter,
@@ -94,12 +95,15 @@ class SpyFilter:
 def test_live_streamer_resets_filter_after_a_gap():
     streamer = LiveStreamer("test:gap", filter_enabled=False)
     streamer.emg_filter = spy = SpyFilter()
-    pkt = P.SYNC + bytes([P.TYPE_EMG, 0]) + bytes(P.PACKET_LEN_FILTER_OFF - P.HEADER_LEN)
+
+    def pkt(seq):
+        return P.SYNC + bytes([P.TYPE_EMG, seq]) + bytes(P.PACKET_LEN_FILTER_OFF - P.HEADER_LEN)
+
     t0 = 10**9
-    streamer._publish(t0, pkt)  # first chunk: starts from its first sample
-    streamer._publish(t0 + 10_000_000, pkt)  # 10 ms later: same stream
+    streamer._publish(t0, pkt(0))  # first chunk: starts from its first sample
+    streamer._publish(t0 + 10_000_000, pkt(1))  # 10 ms later: same stream
     assert spy.resets == 1
-    streamer._publish(t0 + 2 * 10**9, pkt)  # after a stall
+    streamer._publish(t0 + 2 * 10**9, pkt(2))  # after a stall
     assert spy.resets == 2
 
 
@@ -177,3 +181,58 @@ def test_live_notch_mains_frequency(tmp_path, caplog, powerline_hz, notch, expec
             expected = describe_filter(live_filter_config(20.0, expected))
         assert describe_filter(session.live.emg_filter.cfg) == expected
     assert any("check the mains" in r.getMessage() for r in caplog.records) == warns
+
+
+def raw_packet(kind, seq, counts=0):
+    body = b"".join(int(counts).to_bytes(3, "big", signed=True) for _ in range(18))
+    return P.SYNC + bytes([kind, seq]) + body + bytes(P.PACKET_LEN_FILTER_OFF - P.HEADER_LEN - 54)
+
+
+def emg_chunk(dec, packets):
+    kinds = {"e": P.TYPE_EMG, "i": P.TYPE_IMU}
+    return dec.feed(b"".join(raw_packet(kinds[k], s, v) for k, s, v in packets))
+
+
+# The live decoder holds a chunk's newest packet until the next one's header arrives, so each
+# chunk below ends with a packet whose sample comes out with the next chunk.
+
+
+def test_gap_filler_interpolates_missing_samples_across_chunks_and_imu_packets():
+    dec, filler = P.StreamDecoder(filter_enabled=False), GapFiller()
+    # 600 counts = 10 uV. Packets 3 and 4 are lost between samples of 20 and 50 uV; 6 is an IMU
+    # packet (not a missing sample); packet 9 is lost after the one that ends the chunk.
+    packets = [("e", 0, 0), ("e", 1, 600), ("e", 2, 1200), ("e", 5, 3000), ("i", 6, 0)]
+    uv, long_gap = filler(emg_chunk(dec, packets + [("e", 7, 3600), ("e", 8, 4200)]))
+    assert not long_gap
+    assert uv[:, 0].round().tolist() == [0, 10, 20, 30, 40, 50, 60]
+    uv, _ = filler(emg_chunk(dec, [("e", 10, 5400), ("e", 11, 6000)]))
+    assert uv[:, 0].round().tolist() == [70, 80, 90]  # 9 lost: filled from the carried sample
+
+
+def test_gap_filler_leaves_a_long_gap_unfilled_and_says_so():
+    dec, filler = P.StreamDecoder(filter_enabled=False), GapFiller(max_fill=10)
+    uv, long_gap = filler(
+        emg_chunk(dec, [("e", 0, 0), ("e", 1, 600), ("e", 40, 1200), ("e", 41, 0)])
+    )
+    assert long_gap and len(uv) == 3  # no 38 invented samples
+    uv, long_gap = filler(emg_chunk(dec, [("e", 42, 0)]))
+    assert not long_gap and len(uv) == 1
+
+
+def test_live_streamer_bridges_short_gaps_and_restarts_its_filter_after_long_ones():
+    streamer = LiveStreamer("test:seqgap", filter_enabled=False)
+    streamer.emg_filter = spy = SpyFilter()
+    sizes = []
+    streamer._emg.push_chunk = lambda x, ts: sizes.append(len(x))
+    t0, dt = 10**9, 1_000_000  # 1 ms apart: no break in arrival time
+
+    def chunk(seqs):
+        return b"".join(raw_packet(P.TYPE_EMG, s) for s in seqs)
+
+    streamer._publish(t0, chunk([0, 1, 2]))
+    base = spy.resets  # the first chunk's own reset
+    streamer._publish(t0 + dt, chunk([3, 4, 5]))
+    streamer._publish(t0 + 2 * dt, chunk([9, 10, 11]))  # 6, 7, 8 lost: filled, the filter runs on
+    assert sizes == [2, 3, 6] and spy.resets == base
+    streamer._publish(t0 + 3 * dt, chunk([100, 101]))  # 88 lost: too long to bridge
+    assert sizes[-1] == 2 and spy.resets == base + 1
