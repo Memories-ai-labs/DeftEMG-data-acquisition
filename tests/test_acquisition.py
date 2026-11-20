@@ -64,6 +64,9 @@ def test_stream_decoder_matches_batch_decode():
         for i in range(600)
     )
     stream = stream[:5000] + stream[5000 + 41 :]  # lose one packet mid-stream
+    stream += P.SYNC + bytes(
+        [P.TYPE_EMG]
+    )  # the live decoder holds the last packet until a header follows
     whole = decode(stream)
     dec = P.StreamDecoder()
     cuts = np.sort(rng.integers(0, len(stream), 80))
@@ -247,3 +250,31 @@ def test_port_names_that_look_like_usb():
         assert _looks_usb(name), name
     for name in ("/dev/cu.Bluetooth-Incoming-Port", "/dev/ttyS0", "COM3"):
         assert not _looks_usb(name), name
+
+
+def test_packet_cut_short_is_dropped_not_decoded_as_garbage():
+    counts = list(range(-9, 9))
+    a, b, c = emg_packet(1, counts), emg_packet(2, counts), emg_packet(3, counts)
+    # 20 bytes lost mid-packet: a's head runs straight into b's header
+    stream = a + b[:25] + c + emg_packet(4, counts)
+    d = decode(stream)
+    np.testing.assert_array_equal(d.emg_seq, [1, 3, 4])  # not a spliced "2"
+    np.testing.assert_allclose(d.emg_uv, np.tile(np.array(counts) / 7.5, (3, 1)))
+    assert d.n_dropped == 1
+
+
+def test_timing_packet_between_data_is_framed_over_and_a_cut_one_is_dropped():
+    counts = [5] * 18
+    marker = P.SYNC + bytes([P.TYPE_MARK, 2]) + bytes(P.PACKET_LEN_FILTER_ON - P.HEADER_LEN)
+    ok = emg_packet(1, counts) + marker + emg_packet(2, counts)
+    assert list(decode(ok).emg_seq) == [1, 2]
+    cut = emg_packet(1, counts)[:30] + marker + emg_packet(2, counts)
+    assert list(decode(cut).emg_seq) == [2]
+
+
+def test_packet_followed_by_lost_bytes_is_dropped():
+    counts = list(range(-9, 9))
+    # b's tail is lost and c's head with it: b's head is padded out with c's tail
+    stream = emg_packet(1, counts) + emg_packet(2, counts)[:20] + emg_packet(3, counts)[30:]
+    stream += emg_packet(4, counts) + emg_packet(5, counts)
+    assert list(decode(stream).emg_seq) == [1, 4, 5]

@@ -29,6 +29,8 @@ STALL_GAP_S = 0.1
 SYNC = b"\xd2\xd2\xd2"
 TYPE_EMG = 0xAA
 TYPE_IMU = 0xBB
+# A timing packet some Wi-Fi links add, of the same length: framed over, never decoded.
+TYPE_MARK = 0xCC
 HEADER_LEN = 5  # 3 sync bytes + type + seq
 
 PACKET_LEN_FILTER_ON = 41
@@ -102,26 +104,40 @@ class FilterStatus:
 # --- Packet decoding ------------------------------------------------------------------------
 
 
-def find_packets(buf: bytes | bytearray | np.ndarray, length: int) -> np.ndarray:
+def find_packets(
+    buf: bytes | bytearray | np.ndarray, length: int, *, final: bool = True
+) -> np.ndarray:
     """Return start offsets of complete packets in ``buf``.
 
     Walks the chain of fixed-length packets, re-synchronising on the next ``D2 D2 D2 {AA,BB}``
     header whenever the expected next header is missing (dropped bytes, command echoes). This
     rejects payload bytes that happen to look like a header, since those are skipped over as
     part of an accepted packet.
+
+    Bytes lost mid-packet leave a block that is the head of one packet and the tail of a later
+    one. It is left out (the sequence numbers count it as dropped), not decoded as one block of
+    garbage, so a packet is kept only if it holds no other header and a header follows it
+    (a command echo or lost bytes after it cost one packet, as a loss does). A genuine
+    payload holds ``D2 D2 D2 {AA,BB,CC}`` about once in 10^8 packets.
+
+    The last packet of ``buf`` has no successor to check yet. With ``final`` (the whole data)
+    it is kept; without (a live stream), it is left for the next call until a header follows.
     """
     a = np.frombuffer(buf, dtype=np.uint8) if not isinstance(buf, np.ndarray) else buf
     if a.size < length:
         return np.empty(0, dtype=np.int64)
     n = a.size - 3
-    is_hdr = (
-        (a[:n] == 0xD2)
-        & (a[1 : n + 1] == 0xD2)
-        & (a[2 : n + 2] == 0xD2)
-        & ((a[3 : n + 3] == TYPE_EMG) | (a[3 : n + 3] == TYPE_IMU))
-    )
-    candidates = np.flatnonzero(is_hdr)
+    sync = (a[:n] == 0xD2) & (a[1 : n + 1] == 0xD2) & (a[2 : n + 2] == 0xD2)
+    kind = a[3 : n + 3]
+    headers = np.flatnonzero(sync & ((kind == TYPE_EMG) | (kind == TYPE_IMU) | (kind == TYPE_MARK)))
+    candidates = np.flatnonzero(sync & ((kind == TYPE_EMG) | (kind == TYPE_IMU)))
     candidates = candidates[candidates + length <= a.size]
+    # headers strictly inside (c, c + length): the packet at c was cut short
+    inner = np.searchsorted(headers, candidates + length) - np.searchsorted(headers, candidates + 1)
+    candidates = candidates[inner == 0]
+    after = candidates + length
+    seen = after + 4 <= a.size  # the successor's header is within buf
+    candidates = candidates[np.isin(after, headers) | (final & ~seen)]
 
     starts: list[int] = []
     next_expected = -1
@@ -257,10 +273,11 @@ class StreamDecoder:
     def feed(self, data: bytes) -> DecodedStream:
         buf = self._carry + data
         a = np.frombuffer(buf, dtype=np.uint8)
-        starts = find_packets(a, self.length)
+        starts = find_packets(a, self.length, final=False)
         consumed = int(starts[-1]) + self.length if starts.size else 0
-        # Anything that could still be the start of an incomplete packet is kept for next time.
-        self._carry = buf[max(consumed, len(buf) - self.length + 1) :]
+        # Anything that could still be the start of an incomplete packet, or of a packet whose
+        # successor's header hasn't arrived, is kept for next time.
+        self._carry = buf[max(consumed, len(buf) - self.length - 3) :]
         out = _decode_packets(a, starts, self.length, self.filter_enabled, self._last_seq)
         if starts.size:
             self._last_seq = int(max(out.emg_seq.max(initial=-1), out.imu_seq.max(initial=-1)))
