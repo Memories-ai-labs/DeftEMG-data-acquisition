@@ -64,6 +64,9 @@ def test_stream_decoder_matches_batch_decode():
         for i in range(600)
     )
     stream = stream[:5000] + stream[5000 + 41 :]  # lose one packet mid-stream
+    stream += P.SYNC + bytes(
+        [P.TYPE_EMG]
+    )  # the live decoder holds the last packet until a header follows
     whole = decode(stream)
     dec = P.StreamDecoder()
     cuts = np.sort(rng.integers(0, len(stream), 80))
@@ -247,3 +250,114 @@ def test_port_names_that_look_like_usb():
         assert _looks_usb(name), name
     for name in ("/dev/cu.Bluetooth-Incoming-Port", "/dev/ttyS0", "COM3"):
         assert not _looks_usb(name), name
+
+
+def test_packet_cut_short_is_dropped_not_decoded_as_garbage():
+    counts = list(range(-9, 9))
+    a, b, c = emg_packet(1, counts), emg_packet(2, counts), emg_packet(3, counts)
+    # 20 bytes lost mid-packet: a's head runs straight into b's header
+    stream = a + b[:25] + c + emg_packet(4, counts)
+    d = decode(stream)
+    np.testing.assert_array_equal(d.emg_seq, [1, 3, 4])  # not a spliced "2"
+    np.testing.assert_allclose(d.emg_uv, np.tile(np.array(counts) / 7.5, (3, 1)))
+    assert d.n_dropped == 1
+
+
+def test_timing_packet_between_data_is_framed_over_and_a_cut_one_is_dropped():
+    counts = [5] * 18
+    marker = P.SYNC + bytes([P.TYPE_MARK, 2]) + bytes(P.PACKET_LEN_FILTER_ON - P.HEADER_LEN)
+    ok = emg_packet(1, counts) + marker + emg_packet(2, counts)
+    assert list(decode(ok).emg_seq) == [1, 2]
+    cut = emg_packet(1, counts)[:30] + marker + emg_packet(2, counts)
+    assert list(decode(cut).emg_seq) == [2]
+
+
+def test_packet_followed_by_lost_bytes_is_dropped():
+    counts = list(range(-9, 9))
+    # b's tail is lost and c's head with it: b's head is padded out with c's tail
+    stream = emg_packet(1, counts) + emg_packet(2, counts)[:20] + emg_packet(3, counts)[30:]
+    stream += emg_packet(4, counts) + emg_packet(5, counts)
+    assert list(decode(stream).emg_seq) == [1, 4, 5]
+
+
+def timing_packet(
+    seq, *, length, version=3, no=7, bridge_us=1_000_000, count=500, dongle_us=2_000_000
+):
+    body = bytearray(length - P.HEADER_LEN)
+    body[0:2] = P.MARKER_MAGIC
+    body[2] = version
+    body[3] = 2  # pair
+    body[5:13] = bridge_us.to_bytes(8, "little", signed=True)
+    body[13:17] = count.to_bytes(4, "little")
+    body[17] = P.TYPE_EMG
+    body[18:26] = dongle_us.to_bytes(8, "little", signed=True)
+    body[26:30] = no.to_bytes(4, "little")
+    if version >= 2 and length >= 41:
+        body[30:32], body[32:34], body[34], body[35] = (
+            (11).to_bytes(2, "little"), (10).to_bytes(2, "little"), 1, 2)  # fmt: skip
+    if version >= 3 and length >= 59:
+        body[36:38], body[38:40] = (5).to_bytes(2, "little"), (9).to_bytes(2, "little")
+        body[40:44] = (123456).to_bytes(4, "little")
+    return P.SYNC + bytes([P.TYPE_MARK, seq]) + bytes(body)
+
+
+def raw_emg_packet(seq, value=0):
+    body = b"".join(int(value).to_bytes(3, "big", signed=True) for _ in range(18))
+    return P.SYNC + bytes([P.TYPE_EMG, seq & 0xFF]) + body + bytes(59 - 5 - 54)
+
+
+def test_decode_markers_raw_and_filtered_streams():
+    raw = (
+        raw_emg_packet(1)
+        + timing_packet(1, length=59, no=7, bridge_us=-5, count=500)
+        + raw_emg_packet(2)
+        + timing_packet(2, length=59, no=8, count=501)
+    )
+    d = decode(raw, filter_enabled=False)
+    m = d.markers
+    np.testing.assert_array_equal(m["offset"], [59, 177])
+    np.testing.assert_array_equal(m["no"], [7, 8])
+    np.testing.assert_array_equal(m["bridge_tsf_us"], [-5, 1_000_000])
+    np.testing.assert_array_equal(m["dongle_tsf_us"], [2_000_000] * 2)
+    np.testing.assert_array_equal(m["band_count"], [500, 501])
+    np.testing.assert_array_equal(m["n_band_packets"], [1, 2])  # band packets before each
+    np.testing.assert_array_equal(m["prev_seq"], [1, 2])
+    assert (m["pair"] == 2).all() and (m["prev_type"] == P.TYPE_EMG).all()
+    assert (m["bridge_cmd_rx"] == 11).all() and (m["bridge_cmd_drop"] == 2).all()
+    assert (m["bridge_gaps"] == 5).all() and (m["bridge_dropped_bytes"] == 123456).all()
+    assert list(d.emg_seq) == [1, 2] and d.n_dropped == 0  # markers don't touch the band's seq
+    flat = d.as_dict()
+    assert "marker_no" in flat and "markers" not in flat
+
+    # filter on: 41-byte packets have no loss counters; a version 1 marker has no counters
+    on = (
+        emg_packet(1, [0] * 18)
+        + timing_packet(1, length=41, version=2)
+        + timing_packet(1, length=41, version=1)
+        + emg_packet(2, [0] * 18)
+    )
+    m = decode(on, filter_enabled=True).markers
+    np.testing.assert_array_equal(m["bridge_cmd_rx"], [11, 0])
+    assert (m["bridge_gaps"] == 0).all() and len(m["offset"]) == 2
+
+
+def test_markers_ignore_other_timing_packets_and_empty_streams():
+    other = bytearray(timing_packet(1, length=41))
+    other[5:7] = b"XX"  # not a marker we know: framed over, not decoded
+    d = decode(emg_packet(1, [0] * 18) + bytes(other) + emg_packet(2, [0] * 18))
+    assert len(d.markers["offset"]) == 0 and list(d.emg_seq) == [1, 2]
+    empty = decode(b"").markers
+    assert set(empty) == set(P.MARKER_FIELDS) and all(len(v) == 0 for v in empty.values())
+
+
+def test_trial_recorder_saves_markers_with_host_time(tmp_path):
+    from deftemg_acquisition.acquisition.recorder import TrialRecorder
+
+    rec = TrialRecorder()
+    rec(100, raw_emg_packet(1) + timing_packet(1, length=59, no=3)[:30])
+    rec(200, timing_packet(1, length=59, no=3)[30:] + raw_emg_packet(2))
+    files = rec.save(tmp_path / "t", filter_enabled=False)
+    z = np.load(files.npz)
+    np.testing.assert_array_equal(z["marker_no"], [3])
+    np.testing.assert_array_equal(z["marker_host_time_ns"], [200])  # complete in the second read
+    assert z["marker_n_band_packets"].tolist() == [1]
