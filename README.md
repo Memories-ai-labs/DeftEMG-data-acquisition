@@ -629,6 +629,12 @@ Key arrays in the trial `.npz`:
   when each USB chunk arrived).
 - **IMU:** `gyro_rad_s`, `acc_m_s2`, `temperature_c`, `battery_mv`, `battery_pct`,
   `device_time_ms` (armband clock, set from the computer at trial start), `imu_host_time_ns`.
+- **Link timing packets** (a wireless link that inserts `D2 D2 D2 CC` packets; absent, the arrays
+  are empty): `marker_*`, one row per packet, with `marker_host_time_ns` (when its last byte
+  arrived), `marker_n_band_packets` (EMG and IMU packets before it), `marker_band_count` (the
+  link's own count of band packets), the link's two Wi-Fi clocks `marker_bridge_tsf_us` and
+  `marker_dongle_tsf_us`, `marker_no`, and its command and loss counters. They are never part of
+  `emg_*` / `imu_*` or the sequence check. Fields: `protocol.decode_markers`.
 - **Prompts** (prompter trials):
   - `prompt_onset_host_ns`, `prompt_offset_host_ns`: scheduled times.
   - `prompt_onset_paint_ns`, `prompt_offset_paint_ns`: when each prompt was actually drawn

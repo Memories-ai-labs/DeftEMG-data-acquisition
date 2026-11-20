@@ -11,7 +11,7 @@ at 256. Packet length depends on whether the built-in filter is enabled:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -105,7 +105,11 @@ class FilterStatus:
 
 
 def find_packets(
-    buf: bytes | bytearray | np.ndarray, length: int, *, final: bool = True
+    buf: bytes | bytearray | np.ndarray,
+    length: int,
+    *,
+    final: bool = True,
+    kinds: tuple[int, ...] = (TYPE_EMG, TYPE_IMU),
 ) -> np.ndarray:
     """Return start offsets of complete packets in ``buf``.
 
@@ -122,6 +126,7 @@ def find_packets(
 
     The last packet of ``buf`` has no successor to check yet. With ``final`` (the whole data)
     it is kept; without (a live stream), it is left for the next call until a header follows.
+    ``kinds`` are the packet types returned; the others still frame the stream.
     """
     a = np.frombuffer(buf, dtype=np.uint8) if not isinstance(buf, np.ndarray) else buf
     if a.size < length:
@@ -130,7 +135,7 @@ def find_packets(
     sync = (a[:n] == 0xD2) & (a[1 : n + 1] == 0xD2) & (a[2 : n + 2] == 0xD2)
     kind = a[3 : n + 3]
     headers = np.flatnonzero(sync & ((kind == TYPE_EMG) | (kind == TYPE_IMU) | (kind == TYPE_MARK)))
-    candidates = np.flatnonzero(sync & ((kind == TYPE_EMG) | (kind == TYPE_IMU)))
+    candidates = np.flatnonzero(sync & np.isin(kind, kinds))
     candidates = candidates[candidates + length <= a.size]
     # headers strictly inside (c, c + length): the packet at c was cut short
     inner = np.searchsorted(headers, candidates + length) - np.searchsorted(headers, candidates + 1)
@@ -163,6 +168,76 @@ def unwrap_seq(seq: np.ndarray, prev: int | None = None) -> np.ndarray:
     return np.concatenate([[first], first + np.cumsum(steps)])
 
 
+def _le(cols: np.ndarray, signed: bool = False) -> np.ndarray:
+    """Combine little-endian byte columns (..., nbytes) into int64 values."""
+    nbytes = cols.shape[-1]
+    val = np.zeros(cols.shape[:-1], dtype=np.uint64)
+    for i in range(nbytes):
+        val |= cols[..., i].astype(np.uint64) << np.uint64(8 * i)
+    if signed:
+        return val.view(np.int64)
+    return val.astype(np.int64)
+
+
+MARKER_MAGIC = b"SY"
+MARKER_FIELDS = (
+    "offset", "version", "pair", "bridge_tsf_us", "band_count", "prev_type", "dongle_tsf_us",
+    "no", "prev_seq", "bridge_cmd_rx", "bridge_cmd_ok", "bridge_cmd_fail", "bridge_cmd_drop",
+    "bridge_gaps", "bridge_lost", "bridge_dropped_bytes", "n_band_packets",
+)  # fmt: skip
+
+
+def decode_markers(a: np.ndarray, length: int, emg_offset: np.ndarray, imu_offset: np.ndarray):
+    """Decode the timing packets (type ``TYPE_MARK``) a wireless link adds to the stream.
+
+    Layout (little-endian, offsets from the packet's first byte): ``SY`` at 5, version at 7,
+    pair number at 8, the bridge's Wi-Fi clock in us at 10 (int64) and the count of band packets
+    it had received at 18 (uint32), the type of the band packet before it at 22, the dongle's
+    Wi-Fi clock in us at 23 (int64), a running marker number at 31 (uint32). Version 2+ adds the
+    bridge's command counters (35: received u16, written u16, failed u8, dropped u8); version
+    3+ in a 59-byte packet adds where loss happened (41: gaps u16, packets missing u16, bytes
+    dropped u32). Counters a version lacks read 0. Packets without ``SY`` are ignored.
+
+    Returns int64 arrays by ``MARKER_FIELDS``: ``offset`` is the byte position in the stream and
+    ``n_band_packets`` the EMG and IMU packets that precede it in it, so a marker can be put on
+    the host's clock through the chunk that carried it. ``prev_seq`` is its byte 4, the
+    sequence number of the band packet before it, kept out of the band's own sequence check.
+    """
+    starts = find_packets(a, length, kinds=(TYPE_MARK,))
+    if starts.size:
+        magic = a[starts[:, None] + np.arange(5, 7)] == np.frombuffer(MARKER_MAGIC, np.uint8)
+        starts = starts[magic.all(1)]
+    pk = a[starts[:, None] + np.arange(length)] if starts.size else np.empty((0, length), np.uint8)
+    n = len(starts)
+    zeros = np.zeros(n, np.int64)
+    version = pk[:, 7].astype(np.int64) if n else zeros
+    fields: dict[str, np.ndarray] = dict.fromkeys(MARKER_FIELDS, zeros)
+    fields.update(
+        offset=starts.astype(np.int64),
+        version=version,
+        pair=pk[:, 8].astype(np.int64) if n else zeros,
+        prev_type=pk[:, 22].astype(np.int64) if n else zeros,
+        prev_seq=pk[:, 4].astype(np.int64) if n else zeros,
+    )
+    if n:
+        fields["bridge_tsf_us"] = _le(pk[:, 10:18], signed=True)
+        fields["band_count"] = _le(pk[:, 18:22])
+        fields["dongle_tsf_us"] = _le(pk[:, 23:31], signed=True)
+        fields["no"] = _le(pk[:, 31:35])
+        v2 = (version >= 2) & (length >= 41)
+        v3 = (version >= 3) & (length >= 59)
+        for name, lo, hi, has in (
+            ("bridge_cmd_rx", 35, 37, v2), ("bridge_cmd_ok", 37, 39, v2),
+            ("bridge_cmd_fail", 39, 40, v2), ("bridge_cmd_drop", 40, 41, v2),
+            ("bridge_gaps", 41, 43, v3), ("bridge_lost", 43, 45, v3),
+            ("bridge_dropped_bytes", 45, 49, v3),
+        ):  # fmt: skip
+            fields[name] = np.where(has, _le(pk[:, lo:hi]), 0)
+        band = np.sort(np.concatenate([emg_offset, imu_offset]))
+        fields["n_band_packets"] = np.searchsorted(band, starts).astype(np.int64)
+    return fields
+
+
 def _be_signed(cols: np.ndarray) -> np.ndarray:
     """Combine big-endian byte columns (..., nbytes) into signed int64 values."""
     nbytes = cols.shape[-1]
@@ -190,16 +265,21 @@ class DecodedStream:
     battery_pct: np.ndarray  # (n_imu,)
     device_time_ms: np.ndarray  # (n_imu,) uint64, Unix ms from the device clock
     n_dropped: int  # packets missing according to the shared sequence counter
+    markers: dict[str, np.ndarray] = field(default_factory=dict)  # decode_markers; whole data only
 
     def as_dict(self) -> dict[str, np.ndarray | int]:
-        return dict(self.__dict__)
+        d = {k: v for k, v in self.__dict__.items() if k != "markers"}
+        d.update({f"marker_{k}": v for k, v in self.markers.items()})
+        return d
 
 
 def decode(buf: bytes | bytearray, filter_enabled: bool = True) -> DecodedStream:
     length = packet_len(filter_enabled)
     a = np.frombuffer(bytes(buf), dtype=np.uint8)
     starts = find_packets(a, length)
-    return _decode_packets(a, starts, length, filter_enabled, prev_seq=None)
+    out = _decode_packets(a, starts, length, filter_enabled, prev_seq=None)
+    out.markers = decode_markers(a, length, out.emg_offset, out.imu_offset)
+    return out
 
 
 def _decode_packets(
