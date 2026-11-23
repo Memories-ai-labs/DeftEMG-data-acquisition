@@ -1,4 +1,5 @@
-"""Recordings replayed as the armband (acquisition.replay): the live path without hardware."""
+"""Recordings replayed as the armband (``acquisition.armband.replay``): the live path without
+hardware."""
 
 from pathlib import Path
 
@@ -6,9 +7,13 @@ import numpy as np
 import pytest
 
 from deftemg_acquisition.acquisition import AcquisitionSession, SessionConfig
-from deftemg_acquisition.acquisition import protocol as P
-from deftemg_acquisition.acquisition.device import DeviceError
-from deftemg_acquisition.acquisition.replay import RecordedStream, ReplayArmband, emg_packets
+from deftemg_acquisition.acquisition.armband import protocol as P
+from deftemg_acquisition.acquisition.armband.device import DeviceError
+from deftemg_acquisition.acquisition.armband.replay import (
+    RecordedStream,
+    ReplayArmband,
+    emg_packets,
+)
 from deftemg_acquisition.data.trials import load_trial, scan_trials
 
 

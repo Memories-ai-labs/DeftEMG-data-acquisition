@@ -52,6 +52,7 @@ FOREGROUND = "#E8E8E8"
 LEVEL_RADIUS = {"low": 0.18, "medium": 0.28, "high": 0.38, "max": 0.47}
 METER_H = 40  # room under the target row for the effort bar (bar, its labels, gaps)
 METER_COLOURS = {"below": "#8C8C8C", "inside": "#009E73", "above": "#D55E00"}
+WARNING_COLOUR = "#D55E00"  # the band of ``PrompterWidget.warning``
 SYNC_PATCH_PX = 56  # sync patch: square in the top-right corner for a photodiode or camera
 SYNC_FLASH_S = 0.1  # how long it stays white after each prompt onset
 
@@ -249,6 +250,7 @@ class PrompterWidget(QtWidgets.QWidget):
         self._hand_image_cache: tuple[tuple, tuple[QtCore.QPointF, QtGui.QPixmap]] | None = None
         self.header = ""
         self.message = ""  # large centred text, e.g. instructions between blocks
+        self.warning = ""  # a problem to fix now, on a band under the header, blocks or not
         self.show_effort = False  # the effort bar (and room for it under the target row)
         # (effort, prompted level) while running: effort None = no reading yet (empty bar),
         # level None = between presses (no zone outlined); None: no bar this block
@@ -403,6 +405,14 @@ class PrompterWidget(QtWidgets.QWidget):
                     break
             p.fillRect(text.adjusted(-16, -12, 16, 12), _qcolor(BACKGROUND, 220))
             p.drawText(area, flags, self.message)
+        if self.warning:
+            font.setPointSizeF(font_points(13))
+            font.setBold(True)
+            p.setFont(font)
+            band = QtCore.QRectF(0, lay.header_h, self.width(), lay.header_h * 0.75)
+            p.fillRect(band, _qcolor(WARNING_COLOUR, 230))
+            p.setPen(_qcolor(FOREGROUND))
+            p.drawText(band.adjusted(16, 0, -16, 0), QtCore.Qt.AlignCenter, self.warning)
         p.end()
         if self.on_paint is not None:
             try:

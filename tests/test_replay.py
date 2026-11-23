@@ -72,7 +72,7 @@ def test_calibration_block_records_and_replays(tmp_path):
     from pyqtgraph.Qt import QtCore
 
     from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
-    from deftemg_acquisition.acquisition.sim import SimulatedArmband
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
     from deftemg_acquisition.data.trials import scan_trials, select_trials
     from deftemg_acquisition.tasks.app import TaskWindow
     from deftemg_acquisition.tasks.sequence import calibration_sequence

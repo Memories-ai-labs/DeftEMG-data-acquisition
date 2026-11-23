@@ -21,6 +21,12 @@ blocks save its trace (``effort``, ``effort_host_ns``, ``effort_max_uv``, ``effo
 -1 between presses, else the index into ``level_names``) and the settings (``effort_meter`` in
 the trial's metadata).
 
+A session source that reports a problem with a block (``ok: false`` in the trial's ``sources``,
+e.g. a glove that sent nothing) is named on the screen between blocks, until the next block.
+The sources are also checked every ``SOURCE_CHECK_MS``, between blocks and during them
+(``AcquisitionSession.source_status``); a problem shows on a band under the header until it
+clears.
+
 Plugins (``plugins``: :class:`TaskPlugin`) add to the window from other code, e.g. a live display
 of a model's output: text between blocks, metadata and arrays saved with each block, a hook
 each frame tick. Once attached they can't stop a recording: a hook that raises is logged and
@@ -55,6 +61,17 @@ log = logging.getLogger(__name__)
 # Qt coalesces update() calls, so this does not add paints. Prompt positions are computed at
 # paint time (see PrompterWidget.t0_perf), so ticks only request repaints and send markers.
 FRAME_MS = 4
+SOURCE_CHECK_MS = 1000
+
+
+def source_note(sources: dict) -> str:
+    """Text for the screen between blocks naming the sources that failed in a trial (its
+    ``TrialResult.sources``); empty if none did."""
+    failed = [f"{name}: {meta.get('error', 'failed')}"
+              for name, meta in sources.items() if meta.get("ok") is False]  # fmt: skip
+    if not failed:
+        return ""
+    return "Last block saved without:\n" + "\n".join(failed) + "\n\n"
 
 
 class TaskPlugin:
@@ -121,6 +138,7 @@ class TaskWindow(QtWidgets.QMainWindow):
         self._last_calibration: float | None = None  # start of the last completed one
         self._n_calibrations = 0
         self._due_note = ""
+        self._source_note = ""  # the sources that failed in the last block
 
         self.setWindowTitle("Finger-press prompter")
         self.sync_patch = sync_patch
@@ -146,6 +164,10 @@ class TaskWindow(QtWidgets.QMainWindow):
         self.resize(min(int(height * 0.62), screen.width()), height)
         self._timer = QtCore.QTimer(self, timeout=self._tick, interval=FRAME_MS)
         self._timer.setTimerType(QtCore.Qt.PreciseTimer)
+        self._source_timer = QtCore.QTimer(
+            self, timeout=self.check_sources, interval=SOURCE_CHECK_MS
+        )
+        self._source_timer.start()
         self._show_idle()
 
     # --- state -------------------------------------------------------------------------------
@@ -177,6 +199,19 @@ class TaskWindow(QtWidgets.QMainWindow):
                     self._tick_failed.add(id(plugin))
         return out
 
+    def check_sources(self) -> None:
+        """Show the sources' current problems on the warning band (cleared once they clear)."""
+        problems = self.session.source_status()
+        warning = "   ".join(f"{name}: {problem}" for name, problem in problems.items())
+        if warning == self.prompter.warning:
+            return
+        if warning:
+            log.warning("source problem: %s", warning)
+        else:
+            log.info("sources fine again")
+        self.prompter.warning = warning
+        self.prompter.update()
+
     def _show_idle(self) -> None:
         self.prompter.sequence = self.sequence
         self.prompter.effort = None
@@ -185,14 +220,15 @@ class TaskWindow(QtWidgets.QMainWindow):
         done = f"{len(self.completed)}/{n} blocks done"
         self.prompter.header = f"Block {self.current + 1}/{n}: {self.sequence.name}   ({done})"
         if len(self.completed) == n:
-            self.prompter.message = (
+            self.prompter.message = self._source_note + (
                 "All blocks done.\nEsc to quit, or Left/Right then Shift to redo a block."
             )
         else:
             again = "  (already done)" if self.current in self.completed else ""
             how = self.sequence.params.get("instructions")
             self.prompter.message = (
-                self._due_note
+                self._source_note
+                + self._due_note
                 + f"{self.sequence.name}{again}\n{len(self.sequence.prompts)} presses, "
                 f"{self.sequence.duration_s + self.tail_s:.0f} s\n"
                 + (f"\n{how}\n" if how else "")
@@ -306,12 +342,13 @@ class TaskWindow(QtWidgets.QMainWindow):
             arrays["effort_level"] = np.array(level, np.int8)
         seq = self.sequence
         self._plugins("block_ending", seq, arrays)
-        self.session.end_trial(
+        result = self.session.end_trial(
             arrays=arrays,
             completed=completed,
             scroll_start_host_ns=self._t0_ns,
             elapsed_s=round(elapsed, 3),
         )
+        self._source_note = source_note(result.sources)
         self._plugins("block_ended", seq, completed)
         if completed:
             if self.sequence.task_set == CALIBRATION:
@@ -397,6 +434,7 @@ class TaskWindow(QtWidgets.QMainWindow):
             super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:
+        self._source_timer.stop()
         self.end_block(completed=False)
         if self.effort_meter is not None:
             self.session.device.detach_sink("effort")
