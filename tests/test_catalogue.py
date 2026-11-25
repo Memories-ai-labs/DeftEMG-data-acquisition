@@ -37,28 +37,30 @@ def _obj(data, oid):
 
 def test_shipped_catalogue_counts(cat):
     trials = grasp_trials(cat)
-    assert len(trials) == 456
-    assert len(set((t.object, t.approach, t.grasp, t.variation) for t in trials)) == 456
+    assert len(trials) == 590
+    assert len(set((t.object, t.approach, t.grasp, t.variation) for t in trials)) == 590
     per_object = Counter(t.object for t in trials)
+    # the four variations on every (approach, grasp type), plus 2 rotates per grasp type
     expected = {
-        "water_bottle_rubber": 32,
-        "water_bottle_metal": 24,
-        "tuna_can": 24,
-        "hammer": 8,
-        "potato_chip": 16,
-        "chip_bag": 16,
-        "book": 32,
-        "mug_small": 16,
-        "mug_large": 16,
+        "water_bottle_rubber": 32 + 8,
+        "water_bottle_metal": 24 + 6,
+        "tuna_can": 24 + 8,
+        "hammer": 8,  # no rotate
+        "potato_chip": 16,  # no rotate
+        "chip_bag": 16 + 8,
+        "book": 32 + 8,
+        "mug_small": 16 + 8,
+        "mug_large": 16 + 8,
     }
-    expected |= dict.fromkeys(["baseball", "tennis_ball", "lacrosse_ball"], 16)
+    expected |= dict.fromkeys(["baseball", "tennis_ball", "lacrosse_ball"], 16 + 8)
     expected |= dict.fromkeys(
         ["dish_soap", "windex", "soup_can", "peanut_butter_jar", "apple", "orange", "cracker_box"],
-        32,
+        32 + 8,
     )
     assert per_object == expected
-    # every variation for every object
-    assert all(n == 4 for n in Counter(t[:3] for t in _keys(trials)).values())
+    # the four other variations on every (object, approach, grasp type)
+    others = [k for k in _keys(trials) if not k[3].startswith("rotate")]
+    assert all(n == 4 for n in Counter(k[:3] for k in others).values())
 
     steps = [s for u in natural_units(cat) for s in u.steps]
     assert len(steps) == 31
@@ -111,21 +113,82 @@ def test_shipped_catalogue_exclusions(cat):
 
 def test_shipped_catalogue_text(cat):
     trials = {(t.object, t.approach, t.grasp, t.variation): t for t in grasp_trials(cat)}
-    mug = trials["mug_small", None, "TI", "light"]
+    mug = trials["mug_small", "top", "TI", "light"]
     assert mug.note == "on the lip" and mug.est_s == 4
-    assert mug.text == "Small coffee mug\nThumb-index grasp, on the lip\nLight grasp"
-    assert trials["mug_large", None, "TIM", "squeeze"].note == "on the lip"
-    assert trials["mug_large", None, "AD", "squeeze"].note == ""
+    assert mug.text == (
+        "Small coffee mug, from the top\nThumb-index grasp, on the lip\nSTAY ON TABLE\nLight grasp"
+    )
+    assert trials["mug_large", "top", "TIM", "squeeze"].note == "on the lip"
+    assert trials["mug_large", "side", "AD", "squeeze"].note == "around the body"
     assert trials["windex", "top", "Power", "pnp"].note == "near the top of the stem"
     book = trials["book", "edge", "Power", "pnp_sq"]
     assert book.text.splitlines() == [
         "Book, off the edge of the table",
         "Power grasp",
+        "PICK UP",
         "Pick up, squeeze while moving, place about 30 cm away",
     ]
-    assert book.est_s == 9
+    assert book.est_s == 9 and book.bold_line == 2
     assert cat.grasps["Power"].highlight == "hand"
     assert cat.grasps["TIM"].highlight == ("thumb", "index", "middle")
+
+
+def test_every_grasp_prompt_has_its_lead_at_line_2(cat):
+    leads = {
+        "light": "STAY ON TABLE",
+        "squeeze": "STAY ON TABLE",
+        "pnp": "PICK UP",
+        "pnp_sq": "PICK UP",
+        "rotate_slow": "PICK UP",
+        "rotate_fast": "PICK UP",
+    }
+    assert {v.id: v.lead for v in cat.variations.values()} == leads
+    for t in grasp_trials(cat):
+        lines = t.text.splitlines()
+        assert t.bold_line == 2 and lines[2] == leads[t.variation], t
+        assert lines[3] == cat.variations[t.variation].text
+
+
+def test_rotate_on_the_first_approach_offering_each_grasp_type(cat):
+    trials = grasp_trials(cat)
+    for v in ["rotate_slow", "rotate_fast"]:
+        rotate = [t for t in trials if t.variation == v]
+        pairs = {(t.object, t.grasp) for t in rotate}
+        assert len(rotate) == len(pairs) == 67  # once per (object, grasp type)
+        every = {(t.object, t.grasp) for t in trials}
+        assert pairs == {p for p in every if p[0] not in ("hammer", "potato_chip")}
+        assert len({o for o, _ in pairs}) == 17
+        at = {(t.object, t.grasp): t.approach for t in rotate}
+        # the tuna can's side takes only TI and TIM, so AD and Power rotate from the top
+        assert {g: at["tuna_can", g] for g in cat.grasps} == {
+            "TI": "side", "TIM": "side", "AD": "top", "Power": "top"}  # fmt: skip
+        assert {at["dish_soap", g] for g in cat.grasps} == {"side"}  # first listed approach
+        assert {at["book", g] for g in cat.grasps} == {"edge"}
+        assert {at["baseball", g] for g in cat.grasps} == {None}
+    assert cat.variations["rotate_slow"].est_s == 12 and cat.variations["rotate_fast"].est_s == 8
+    assert not cat.variations["pnp"].first_approach_only
+
+
+def test_mugs_lip_from_the_top_body_from_the_side(cat):
+    for mug in ["mug_small", "mug_large"]:
+        ts = [t for t in grasp_trials(cat) if t.object == mug]
+        assert {t.approach for t in ts} == {"top", "side"}
+        for t in ts:
+            if t.approach == "top":
+                assert t.grasp in ("TI", "TIM") and t.note == "on the lip"
+            else:
+                assert t.grasp in ("AD", "Power") and t.note == "around the body"
+            assert t.text.splitlines()[1].endswith(", " + t.note)
+
+
+def test_shipped_terms_and_items(cat):
+    terms = {t.term: t.text for t in cat.terms}
+    assert terms["Light grasp"] == "touch the object lightly"
+    assert terms["Grasp and squeeze"] == "touch the object and squeeze at a sub-maximum force"
+    assert [t.term for t in cat.terms][:2] == ["Light grasp", "Grasp and squeeze"]  # file order
+    items = {t.id: t.items for t in cat.natural}
+    assert items["mug_drink"] == ("Small coffee mug", "Large coffee mug")
+    assert all(items.values())
 
 
 def test_natural_pairs_stay_in_order(cat):
@@ -297,3 +360,72 @@ def test_file_that_is_not_utf8(tmp_path):
     path.write_bytes(SHIPPED.read_bytes().replace(b"Baseball", b"Baseb\xe4ll"))
     with pytest.raises(CatalogueError, match=r"latin1\.toml: .*utf-8"):
         load_catalogue(path)
+
+
+def _variation(data, vid):
+    return next(v for v in data["variations"] if v["id"] == vid)
+
+
+def test_first_approach_only_keeps_every_approach_with_a_prompt(data):
+    """Variations only on the first approach would leave a later approach empty: an error."""
+    for v in data["variations"]:
+        v["first_approach_only"] = True
+    with pytest.raises(CatalogueError, match=r"'water_bottle_rubber': no combinations from "):
+        parse_catalogue(data)
+
+
+def test_terms_are_optional(data):
+    del data["terms"]
+    assert parse_catalogue(data).terms == []
+
+
+def _no_items(data):
+    del data["natural"][0]["items"]
+
+
+def _empty_items(data):
+    data["natural"][0]["items"] = []
+
+
+def _empty_item(data):
+    data["natural"][0]["items"] = ["Book", " "]
+
+
+def _items_not_a_list(data):
+    data["natural"][0]["items"] = "Book"
+
+
+def _repeated_term(data):
+    data["terms"].append({"term": "Light grasp", "text": "again"})
+
+
+@pytest.mark.parametrize(
+    "edit, match",
+    [
+        (
+            lambda d: _variation(d, "rotate_fast").update(first_approach_only="yes"),
+            r"variations 'rotate_fast'.first_approach_only: expected true or false",
+        ),
+        (
+            lambda d: _variation(d, "rotate_fast").update(first_approach_only=1),
+            r"variations 'rotate_fast'.first_approach_only: expected true or false",
+        ),
+        (lambda d: _variation(d, "pnp").update(lead=""), r"variations 'pnp'.lead: expected a non"),
+        (lambda d: _variation(d, "pnp").update(lead=["PICK UP"]), r"variations 'pnp'.lead"),
+        (lambda d: _variation(d, "pnp").update(bold="PICK UP"), r"variations\[2\]: unknown key"),
+        (_no_items, r"natural\[0\]: missing items"),
+        (_empty_items, r"natural 'pages'.items: expected a non-empty list"),
+        (_empty_item, r"natural 'pages'.items: expected a non-empty string"),
+        (_items_not_a_list, r"natural 'pages'.items: expected a list of strings"),
+        (_repeated_term, r"terms: 'Light grasp' is given twice"),
+        (lambda d: d["terms"][0].update(term=""), r"terms\[0\].term: expected a non-empty"),
+        (lambda d: d["terms"][0].update(text=" "), r"terms 'Light grasp'.text: expected a non"),
+        (lambda d: d["terms"][0].pop("text"), r"terms\[0\]: missing text"),
+        (lambda d: d["terms"][0].update(note="x"), r"terms\[0\]: unknown key\(s\) note"),
+        (lambda d: d.update(terms={"term": "x", "text": "y"}), r"terms: expected a list"),
+    ],
+)
+def test_new_key_errors(data, edit, match):
+    edit(data)
+    with pytest.raises(CatalogueError, match=match):
+        parse_catalogue(data)

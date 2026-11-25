@@ -15,8 +15,10 @@ import pyqtgraph as pg  # noqa: E402
 from deftemg_acquisition.cli import make_task_sequences, prompter  # noqa: E402
 from deftemg_acquisition.data.trials import read_records  # noqa: E402
 from deftemg_acquisition.tasks.app import TaskWindow  # noqa: E402
+from deftemg_acquisition.tasks.catalogue import load_catalogue  # noqa: E402
 from deftemg_acquisition.tasks.sequence import Prompt, Sequence, calibration_for  # noqa: E402
 from deftemg_acquisition.tasks.textblock import GRASP_CALIBRATION, TextBlock, TextPrompt  # noqa: E402
+from deftemg_acquisition.tasks.textgen import generate_task_blocks  # noqa: E402
 
 CATALOGUE = Path(__file__).parents[1] / "protocols/grasp_natural/catalogue.toml"
 BOTTLES = ["--condition", "bottle_fill_rubber=filled", "--condition", "bottle_fill_metal=empty"]
@@ -147,10 +149,23 @@ def _main(monkeypatch, argv: list[str]) -> RunOneBlock:
     return app
 
 
+def _rubber_bottle_only_seed(seeds=range(1, 201)) -> int:
+    """The first seed whose S01 uses one condition, the rubber bottle's (searched, so a
+    catalogue change does not silently break a hand-picked seed)."""
+    cat = load_catalogue(CATALOGUE)
+    for seed in seeds:
+        s01 = generate_task_blocks(cat, seed=seed).sessions[0]
+        if {c for b in s01.blocks for c in b.params["conditions"]} == {"bottle_fill_rubber"}:
+            return seed
+    pytest.fail(f"no seed in {seeds} gives an S01 whose only condition is bottle_fill_rubber")
+
+
 @pytest.fixture(scope="module")
 def task_set(tmp_path_factory) -> Path:
+    """A generated set whose S01 uses one condition, the rubber bottle's."""
     out = tmp_path_factory.mktemp("set") / "G01"
-    make_task_sequences.main(["--catalogue", str(CATALOGUE), "--out", str(out), "--seed", "3"])
+    seed = str(_rubber_bottle_only_seed())
+    make_task_sequences.main(["--catalogue", str(CATALOGUE), "--out", str(out), "--seed", seed])
     return out
 
 
@@ -199,7 +214,8 @@ def test_a_generated_block_with_a_condition_records_it(task_set, tmp_path, monke
     meta = json.loads((tmp_path / "x" / "session.json").read_text())["metadata"]
     assert meta["conditions"] == {"bottle_fill_rubber": "filled"}
     (rec,) = read_records(tmp_path / "x")
-    assert rec["label"] == "S01_b02_water_bottle_rubber"
+    (bottle,) = task_set.glob("S01/b??_water_bottle_rubber.json")  # its place depends on the seed
+    assert rec["label"] == f"S01_{bottle.stem}"
     assert rec["metadata"]["conditions"] == {"bottle_fill_rubber": "filled"}
 
 

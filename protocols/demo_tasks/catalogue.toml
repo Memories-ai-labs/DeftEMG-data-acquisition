@@ -18,12 +18,34 @@ whole_hand = true
 [[variations]]
 id = "light"
 text = "Light grasp"
+lead = "STAY ON TABLE"
 est_s = 4
 
 [[variations]]
 id = "squeeze"
 text = "Grasp and squeeze"
+lead = "STAY ON TABLE"
 est_s = 6
+
+[[terms]]
+term = "Light grasp"
+text = "touch the object lightly"
+
+[[terms]]
+term = "Grasp and squeeze"
+text = "touch the object and squeeze at a sub-maximum force"
+
+[[terms]]
+term = "Stay on table"
+text = "the object stays on the table the whole time"
+
+[[terms]]
+term = "Brief maximum"
+text = "grasp as hard as is comfortable, for the prompt duration"
+
+[[terms]]
+term = "Highlighted fingertips"
+text = "use only the fingertips lit on the hand (the whole hand if all of it is lit)"
 
 [approaches]
 side = "from the side"
@@ -48,6 +70,7 @@ condition = "mug_fill"
 [[natural]]
 id = "jar"
 group = "jar_and_pages"
+items = ["Jar"]
 est_s = 8
 
 [[natural.steps]]
@@ -61,5 +84,6 @@ text = "Close the turn-lid of the jar"
 [[natural]]
 id = "pages"
 group = "jar_and_pages"
+items = ["Book"]
 text = "Open the book, then turn pages until the time is up"
 fixed_s = 10

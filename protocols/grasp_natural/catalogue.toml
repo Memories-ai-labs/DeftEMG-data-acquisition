@@ -3,8 +3,13 @@
 # Add an object or a task by editing this file; no code changes are needed.
 #
 # Grasp blocks: one block per object. Each prompt names the object, an approach, a grasp type
-# and a task variation; every allowed combination appears once per set. An object takes every
-# grasp type and every variation, with one unnamed approach, unless it says otherwise:
+# and a task variation; every allowed combination appears once per set. A variation has an id,
+# its text and est_s (the estimated time of one prompt), and optionally:
+#   lead                a line shown in bold between the grasp line and the text ("PICK UP")
+#   first_approach_only true: per grasp type, only on the first of the object's approaches (in
+#                       the order the object lists them) that offers that grasp type
+# An object takes every grasp type and every variation, with one unnamed approach, unless it
+# says otherwise:
 #   approaches          approach ids from [approaches], one prompt set per approach
 #   grasps              only these grasp types
 #   exclude_grasps      every grasp type but these
@@ -15,7 +20,9 @@
 #   condition           a session condition from [conditions], asked at the session start and
 #                       saved with the object's blocks
 #
-# Natural blocks: one block per group. A task is one or more steps; a task with variants is
+# Natural blocks: one block per group. Each task lists in items what to set out for it, as
+# the subject sees it (e.g. ["Small coffee mug", "Large coffee mug"]); the block's start screen
+# lists its tasks' items. A task is one or more steps; a task with variants is
 # repeated for each variant ("{variant}" in a text is the variant's name, and a variant can
 # give a step its own wording with text.<step>, or with text = "..." for a one-step task).
 # Variants must differ in their prompt text, so the subject sees which one is meant. One
@@ -28,6 +35,9 @@
 # started by the operator and held for hold_s. An optional [calibration] table overrides its
 # defaults: hold_s, and [[calibration.maxima]] entries, each with grasp, object (an id) and
 # text (its first line names what to set out). The generator copies it into every block.
+#
+# Terms: an optional [[terms]] list, each a term and what it means (text), shown to the subject
+# in this order before the first block, and again with T.
 
 [catalogue]
 name = "grasp_natural"
@@ -60,22 +70,69 @@ whole_hand = true
 [[variations]]
 id = "light"
 text = "Light grasp"
+lead = "STAY ON TABLE"
 est_s = 4
 
 [[variations]]
 id = "squeeze"
 text = "Grasp and squeeze"
+lead = "STAY ON TABLE"
 est_s = 6
 
 [[variations]]
 id = "pnp"
 text = "Pick up and place about 30 cm away"
+lead = "PICK UP"
 est_s = 8
 
 [[variations]]
 id = "pnp_sq"
 text = "Pick up, squeeze while moving, place about 30 cm away"
+lead = "PICK UP"
 est_s = 9
+
+[[variations]]
+id = "rotate_slow"
+text = "Pick up, rotate slowly in all directions in the air, put it back"
+lead = "PICK UP"
+first_approach_only = true
+est_s = 12
+
+[[variations]]
+id = "rotate_fast"
+text = "Pick up, rotate quickly in all directions in the air, put it back"
+lead = "PICK UP"
+first_approach_only = true
+est_s = 8
+
+# Terms shown to the subject before the first block (and with T).
+[[terms]]
+term = "Light grasp"
+text = "touch the object lightly"
+
+[[terms]]
+term = "Grasp and squeeze"
+text = "touch the object and squeeze at a sub-maximum force"
+
+[[terms]]
+term = "Stay on table"
+text = "the object stays on the table the whole time"
+
+[[terms]]
+term = "Pick up"
+text = "lift the object off the table"
+
+[[terms]]
+term = "Rotate"
+text = "turn the object in all directions in the air, slowly or quickly, then put it back"
+
+[[terms]]
+term = "Brief maximum"
+text = "grasp as hard as is comfortable, for the prompt duration"
+
+[[terms]]
+term = "Highlighted fingertips"
+text = "use only the fingertips lit on the hand (the whole hand if all of it is lit)"
 
 # Approach ids and the words shown for them.
 [approaches]
@@ -165,24 +222,36 @@ approaches = ["side", "top"]
 id = "hammer"
 name = "Hammer"
 grasps = ["AD", "Power"]
+exclude_variations = ["rotate_slow", "rotate_fast"]
 
 [[objects]]
 id = "mug_small"
 name = "Small coffee mug"
+approaches = ["top", "side"]
+approach_grasps.top = ["TI", "TIM"]
+approach_grasps.side = ["AD", "Power"]
 notes.TI = "on the lip"
 notes.TIM = "on the lip"
+notes.AD = "around the body"
+notes.Power = "around the body"
 
 [[objects]]
 id = "mug_large"
 name = "Large coffee mug"
+approaches = ["top", "side"]
+approach_grasps.top = ["TI", "TIM"]
+approach_grasps.side = ["AD", "Power"]
 notes.TI = "on the lip"
 notes.TIM = "on the lip"
+notes.AD = "around the body"
+notes.Power = "around the body"
 
 [[objects]]
 id = "potato_chip"
 name = "Potato chip"
 approaches = ["side", "top"]
 grasps = ["TI", "TIM"]
+exclude_variations = ["rotate_slow", "rotate_fast"]
 
 [[objects]]
 id = "chip_bag"
@@ -198,18 +267,21 @@ approaches = ["edge", "flat"]
 [[natural]]
 id = "pages"
 group = "pages"
+items = ["Book"]
 text = "Open the book, then turn pages until the time is up"
 fixed_s = 20
 
 [[natural]]
 id = "aquaphor"
 group = "containers"
+items = ["Aquaphor tube"]
 text = "Open the Aquaphor cap"
 est_s = 8
 
 [[natural]]
 id = "cream_jar"
 group = "containers"
+items = ["Medium cream jar"]
 est_s = 8
 
 [[natural.steps]]
@@ -223,6 +295,7 @@ text = "Close the turn-lid of the medium cream jar"
 [[natural]]
 id = "mug_drink"
 group = "containers"
+items = ["Small coffee mug", "Large coffee mug"]
 text = "Use the handle to drink from the {variant} mug"
 est_s = 10
 
@@ -237,6 +310,7 @@ name = "large"
 [[natural]]
 id = "screw_panel"
 group = "screw_panel"
+items = ["Screw panel", "Phillips screwdriver", "Allen key", "Ratchet", "Wrench"]
 est_s = 25
 
 [[natural.steps]]
@@ -286,6 +360,7 @@ name = "wing nut"
 [[natural]]
 id = "usb"
 group = "usb"
+items = ["USB-C plug", "USB-A plug", "A-to-C adapter", "USB ports"]
 est_s = 6
 
 [[natural.steps]]
@@ -313,6 +388,7 @@ text.remove = "Remove the USB-C plug from the A-to-C adapter"
 [[natural]]
 id = "grip"
 group = "grip"
+items = ["Light grip-strength tool", "Medium grip-strength tool", "Heavy grip-strength tool"]
 text = "Squeeze the {variant} grip-strength tool once"
 est_s = 5
 

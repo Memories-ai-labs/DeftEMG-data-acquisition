@@ -21,6 +21,7 @@ from deftemg_acquisition.tasks.textblock import (
     TextPrompt,
     calibration_for_block,
     calibration_settings,
+    check_start_and_terms,
     grasp_calibration_block,
     load_block,
 )
@@ -180,6 +181,11 @@ def test_estimate_rejects_start_index_outside_the_block(timed_calibration):
         (lambda d: d["params"].update(timing={"countdown_s": float("inf")}), "countdown_s"),
         (lambda d: d["params"].update(calibration={"hold": 2}), "params.calibration: unknown"),
         (lambda d: d["params"].update(calibration={"hold_s": -1}), "params.calibration.hold_s"),
+        (lambda d: d["prompts"][0].update(bold_line=True), "bold_line"),
+        (lambda d: d["prompts"][0].update(bold_line=1.0), "bold_line"),
+        (lambda d: d["prompts"][0].update(bold_line="1"), "bold_line"),
+        (lambda d: d["prompts"][0].update(bold_line=-1), "bold_line"),
+        (lambda d: d["prompts"][0].update(bold_line=3), r"line index in 0\.\.2"),
     ],
 )
 def test_bad_text_blocks_raise(change, match):
@@ -187,6 +193,67 @@ def test_bad_text_blocks_raise(change, match):
     change(d)
     with pytest.raises(ValueError, match=match):
         TextBlock.from_dict(d)
+
+
+def test_bold_line_round_trip_and_old_prompts(tmp_path):
+    p = TextPrompt("Tuna can, from the top\nThumb-index grasp\nPICK UP\nPick up and place",
+                   "tuna_can", grasp="TI", bold_line=2)  # fmt: skip
+    assert p.to_dict()["bold_line"] == 2
+    assert TextPrompt.from_dict(p.to_dict()) == p
+    assert TextPrompt("Ball\nPower grasp", "ball", bold_line=0).bold_line == 0  # the first line
+    d = _grasp_block().to_dict()
+    assert d["prompts"][0]["bold_line"] is None  # in every new file
+    for prompt in d["prompts"]:  # a file from before bold_line
+        del prompt["bold_line"]
+    path = tmp_path / "old.json"
+    path.write_text(json.dumps(d))
+    assert [p.bold_line for p in load_block(path).prompts] == [None, None]
+
+
+START = {"set_out": ["Tuna can"], "task": "grasp as prompted, the hand shows which fingers"}
+TERMS = [{"term": "Light grasp", "text": "touch the object lightly"},
+         {"term": "Pick up", "text": "lift the object off the table"}]  # fmt: skip
+
+
+def test_start_and_terms_load(tmp_path):
+    block = _grasp_block(start=START, terms=TERMS)
+    path = tmp_path / "b.json"
+    block.save(path)
+    back = load_block(path)
+    assert back == block and back.params["start"] == START and back.params["terms"] == TERMS
+    check_start_and_terms(block.params)
+    check_start_and_terms({})  # an old block: neither
+
+
+@pytest.mark.parametrize(
+    "change, match",
+    [
+        (lambda p: p.update(start="Tuna can"), r"params\.start: expected a table"),
+        (lambda p: p["start"].pop("task"), r"params\.start: missing task"),
+        (lambda p: p["start"].update(note="x"), r"params\.start: unknown key\(s\) note"),
+        (lambda p: p["start"].update(set_out=[]), r"params\.start\.set_out: expected a non-empty"),
+        (lambda p: p["start"].update(set_out="Tuna can"), r"params\.start\.set_out"),
+        (lambda p: p["start"].update(set_out=["Tuna can", " "]), r"params\.start\.set_out"),
+        (lambda p: p["start"].update(set_out=[3]), r"params\.start\.set_out"),
+        (lambda p: p["start"].update(task=""), r"params\.start\.task: expected a non-empty"),
+        (lambda p: p["start"].update(task=None), r"params\.start\.task"),
+        (lambda p: p.update(terms=[]), r"params\.terms: expected a non-empty list"),
+        (lambda p: p.update(terms={"term": "x", "text": "y"}), r"params\.terms: expected"),
+        (lambda p: p["terms"].append("Rotate"), r"params\.terms\[2\]: expected a table"),
+        (lambda p: p["terms"][0].pop("text"), r"params\.terms\[0\]: missing text"),
+        (lambda p: p["terms"][0].update(note="x"), r"params\.terms\[0\]: unknown key\(s\) note"),
+        (lambda p: p["terms"][1].update(term=" "), r"params\.terms\[1\]\.term: expected"),
+        (lambda p: p["terms"][1].update(text=5), r"params\.terms\[1\]\.text: expected"),
+        (lambda p: p["terms"][1].update(term="Light grasp"), r"params\.terms: 'Light grasp' is"),
+    ],
+)
+def test_bad_start_or_terms_fail_at_load(change, match):
+    d = _grasp_block(start=copy.deepcopy(START), terms=copy.deepcopy(TERMS)).to_dict()
+    change(d["params"])
+    with pytest.raises(ValueError, match=rf"b01_tuna_can: {match}"):
+        TextBlock.from_dict(d)
+    with pytest.raises(ValueError, match=match):  # the helper the window also calls
+        check_start_and_terms(d["params"])
 
 
 def test_a_saved_timed_calibration_loads(timed_calibration):

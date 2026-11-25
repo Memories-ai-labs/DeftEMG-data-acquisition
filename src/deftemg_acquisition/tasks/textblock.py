@@ -88,6 +88,10 @@ GRASP_HIGHLIGHTS = {
     "Power": HAND,
 }
 GRASP_CALIBRATION_TASK = "brief maximum grasps, as hard as is comfortable"  # params["start"]
+# A text block's ``params["start"]`` (what its start screen says: the items to set out and the
+# task) and ``params["terms"]`` (the subject's terms slide), checked by ``check_start_and_terms``
+START_KEYS = ("set_out", "task")
+TERM_KEYS = ("term", "text")
 
 
 def _seconds(v, where: str, positive: bool = False) -> float:
@@ -131,6 +135,7 @@ class TextPrompt:
     duration_s: float | None = None  # fixed duration (page turning); None = operator ends it
     onset_s: float | None = None  # timed blocks only (s after the block starts)
     est_s: float | None = None  # estimated time of the task itself, for the block's estimate
+    bold_line: int | None = None  # 0-based line of ``text`` drawn bold ("PICK UP"); None = none
 
     def __post_init__(self):
         if not isinstance(self.text, str) or not self.text.strip():
@@ -147,6 +152,10 @@ class TextPrompt:
             v = getattr(self, k)
             if v is not None:
                 object.__setattr__(self, k, _seconds(v, f"{where}.{k}", positive=k == "duration_s"))
+        b, n = self.bold_line, len(self.text.split("\n"))
+        if b is not None and (isinstance(b, bool) or not isinstance(b, int) or not 0 <= b < n):
+            raise ValueError(f"{where}: bold_line must be a line index in 0..{n - 1} or None, "
+                             f"got {b!r}")  # fmt: skip
 
     @property
     def offset_s(self) -> float | None:
@@ -179,8 +188,9 @@ class TextBlock:
     task_set: str  # "grasp", "natural" or "grasp_calibration"
     mode: str  # "self_paced" or "timed"
     prompts: list[TextPrompt]
-    # generator settings, for the record: seed, session, est_s, conditions (names),
-    # instructions, catalogue sha256, timing assumptions, calibration overrides
+    # generator settings, for the record: seed, session, est_s, conditions (names), start
+    # (what to set out, and the task), terms, catalogue sha256, timing assumptions, calibration
+    # overrides
     params: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -218,6 +228,7 @@ class TextBlock:
         for k in ("countdown_s", "reset_s"):  # used by estimate_s
             if k in timing:
                 _seconds(timing[k], f"{self.name}: params.timing.{k}")
+        check_start_and_terms(self.params, f"{self.name}: params")
         if "calibration" in self.params:  # fail at load, not when the calibration comes due
             try:
                 calibration_settings(self.params["calibration"])
@@ -326,6 +337,55 @@ def load_block(path: Path) -> Sequence | TextBlock:
     if kind == KIND:
         return TextBlock.from_dict(d)
     raise ValueError(f"{path}: unknown block kind {kind!r}")
+
+
+def _strings(v, where: str) -> list[str]:
+    """A non-empty list of non-empty strings."""
+    if not isinstance(v, list) or not v or not all(isinstance(x, str) and x.strip() for x in v):
+        raise ValueError(f"{where}: expected a non-empty list of non-empty strings, got {v!r}")
+    return v
+
+
+def _string(v, where: str) -> str:
+    if not isinstance(v, str) or not v.strip():
+        raise ValueError(f"{where}: expected a non-empty string, got {v!r}")
+    return v
+
+
+def _keys(d, keys: tuple[str, ...], where: str) -> dict:
+    """A table with exactly ``keys``."""
+    if not isinstance(d, dict):
+        raise ValueError(f"{where}: expected a table, got {d!r}")
+    missing = [k for k in keys if k not in d]
+    unknown = sorted(set(d) - set(keys))
+    if missing:
+        raise ValueError(f"{where}: missing {', '.join(missing)}")
+    if unknown:
+        raise ValueError(f"{where}: unknown key(s) {', '.join(unknown)}")
+    return d
+
+
+def check_start_and_terms(params: dict, where: str = "params") -> None:
+    """Check a text block's ``params["start"]`` (``{"set_out": [items], "task": text}``) and
+    ``params["terms"]`` (a list of ``{"term", "text"}``, terms not repeated), where present
+    (blocks made before them have neither). ``ValueError`` naming ``where`` and the key; run
+    when a block loads and when the prompter's window takes its blocks."""
+    if "start" in params:
+        start = _keys(params["start"], START_KEYS, f"{where}.start")
+        _strings(start["set_out"], f"{where}.start.set_out")
+        _string(start["task"], f"{where}.start.task")
+    if "terms" in params:
+        terms = params["terms"]
+        if not isinstance(terms, list) or not terms:
+            raise ValueError(f"{where}.terms: expected a non-empty list of tables, got {terms!r}")
+        seen = set()
+        for i, t in enumerate(terms):
+            t = _keys(t, TERM_KEYS, f"{where}.terms[{i}]")
+            for k in TERM_KEYS:
+                _string(t[k], f"{where}.terms[{i}].{k}")
+            if t["term"] in seen:
+                raise ValueError(f"{where}.terms: {t['term']!r} is given twice")
+            seen.add(t["term"])
 
 
 # ---- the grasp calibration ----

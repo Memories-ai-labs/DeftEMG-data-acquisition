@@ -60,6 +60,8 @@ class Variation:
     id: str
     text: str
     est_s: float  # estimated time of one trial, countdown and reset not included
+    lead: str = ""  # a line shown in bold above the text ("PICK UP"); "" = none
+    first_approach_only: bool = False  # per grasp type, only on the first approach offering it
 
 
 @dataclass(frozen=True)
@@ -108,6 +110,15 @@ class NaturalTask:
     steps: tuple[NaturalStepSpec, ...]  # run in this order, one after the other
     variants: tuple[NaturalVariant, ...] = ()  # () = the task once, with no variant
     fixed_s: float | None = None  # every step runs this long; None = the operator ends it
+    items: tuple[str, ...] = ()  # what to set out for the task, as the subject sees it
+
+
+@dataclass(frozen=True)
+class Term:
+    """A word used in the prompts and what it means, for the subject's terms slide."""
+
+    term: str  # "Light grasp"
+    text: str  # "touch the object lightly"
 
 
 @dataclass
@@ -122,6 +133,7 @@ class Catalogue:
     natural: list[NaturalTask]
     calibration: dict = field(default_factory=dict)  # optional overrides, read by the blocks
     sha256: str = ""  # of the file it was loaded from
+    terms: list[Term] = field(default_factory=list)  # in display order
 
 
 @dataclass(frozen=True)
@@ -136,6 +148,7 @@ class GraspTrial:
     text: str
     est_s: float
     condition: str | None
+    bold_line: int | None = None  # 0-based line of ``text`` drawn bold (the lead); None = none
 
 
 @dataclass(frozen=True)
@@ -303,9 +316,12 @@ def _object(i: int, d, cat: Catalogue) -> ObjectSpec:
 def _natural(i: int, d) -> NaturalTask:
     where = f"natural[{i}]"
     opt = ["est_s", "text", "steps", "variants", "fixed_s"]
-    d = _table(d, where, ["id", "group"], opt)
+    d = _table(d, where, ["id", "group", "items"], opt)
     tid = _id(d["id"], f"{where}.id")
     where = f"natural {tid!r}"
+    items = _strs(d["items"], f"{where}.items")
+    if not items:
+        raise CatalogueError(f"{where}.items: expected a non-empty list of strings")
     if ("text" in d) == ("steps" in d):
         raise CatalogueError(f"{where}: give either text (one step) or steps")
     if "text" in d:
@@ -345,7 +361,8 @@ def _natural(i: int, d) -> NaturalTask:
         est = fixed  # a fixed-duration step takes its duration
     else:
         raise CatalogueError(f"{where}: missing est_s (needed without fixed_s)")
-    return NaturalTask(tid, _id(d["group"], f"{where}.group"), est, steps, tuple(variants), fixed)
+    group = _id(d["group"], f"{where}.group")
+    return NaturalTask(tid, group, est, steps, tuple(variants), fixed, items)
 
 
 def _maximum(i: int, m, cat: Catalogue):
@@ -381,6 +398,20 @@ def _calibration(d, cat: Catalogue) -> dict:
     return d
 
 
+def _terms(d) -> list[Term]:
+    """The optional ``[[terms]]`` list: each a term and what it means, in display order."""
+    if not isinstance(d, list):
+        raise CatalogueError("terms: expected a list of tables ([[terms]])")
+    terms = []
+    for i, t in enumerate(d):
+        t = _table(t, f"terms[{i}]", ["term", "text"])
+        term = _str(t["term"], f"terms[{i}].term")
+        if term in (x.term for x in terms):
+            raise CatalogueError(f"terms: {term!r} is given twice")
+        terms.append(Term(term, _str(t["text"], f"terms {term!r}.text")))
+    return terms
+
+
 def parse_catalogue(data: dict, sha256: str = "") -> Catalogue:
     """A catalogue from the file's parsed contents, checked: unknown or missing keys, unknown
     names (grasp types, approaches, variations, conditions, steps), duplicate ids, and objects
@@ -390,7 +421,7 @@ def parse_catalogue(data: dict, sha256: str = "") -> Catalogue:
         data,
         "catalogue file",
         top,
-        ["timing", "approaches", "conditions", "natural", "calibration"],
+        ["timing", "approaches", "conditions", "natural", "calibration", "terms"],
     )
     name = _str(_table(d["catalogue"], "catalogue", ["name"])["name"], "catalogue.name")
     timing_keys = [f.name for f in fields(Timing)]
@@ -403,13 +434,21 @@ def parse_catalogue(data: dict, sha256: str = "") -> Catalogue:
         raise CatalogueError("variations: expected a list of tables")
     variations = {}
     for i, v in enumerate(d["variations"]):
-        v = _table(v, f"variations[{i}]", ["id", "text", "est_s"])
+        v = _table(v, f"variations[{i}]", ["id", "text", "est_s"], ["lead", "first_approach_only"])
         vid = _id(v["id"], f"variations[{i}].id")
         _unique([*variations, vid], "variations")
+        where = f"variations {vid!r}"
+        first = v.get("first_approach_only", False)
+        if not isinstance(first, bool):
+            raise CatalogueError(
+                f"{where}.first_approach_only: expected true or false, got {first!r}"
+            )
         variations[vid] = Variation(
             vid,
-            _str(v["text"], f"variations {vid!r}.text"),
-            _seconds(v["est_s"], f"variations {vid!r}.est_s"),
+            _str(v["text"], f"{where}.text"),
+            _seconds(v["est_s"], f"{where}.est_s"),
+            lead=_str(v["lead"], f"{where}.lead") if "lead" in v else "",
+            first_approach_only=first,
         )
     approaches = {
         _id(a, f"approaches.{a}"): _str(t, f"approaches.{a}")
@@ -426,6 +465,7 @@ def parse_catalogue(data: dict, sha256: str = "") -> Catalogue:
         )
     cat = Catalogue(name, timing, grasps, variations, approaches, conditions, [], [], {}, sha256)
     cat.calibration = _calibration(d.get("calibration", {}), cat)
+    cat.terms = _terms(d.get("terms", []))
     if not isinstance(d["objects"], list):
         raise CatalogueError("objects: expected a list of tables")
     cat.objects = [_object(i, o, cat) for i, o in enumerate(d["objects"])]
@@ -436,14 +476,13 @@ def parse_catalogue(data: dict, sha256: str = "") -> Catalogue:
     cat.natural = [_natural(i, t) for i, t in enumerate(natural)]
     _unique([t.id for t in cat.natural], "natural")
     for obj in cat.objects:  # every object and approach has prompts, and every note is shown
-        used = set()
+        combinations = _combinations(cat, obj)
         for approach in obj.approaches or (None,):
-            grasps = _object_grasps(cat, obj, approach)
-            if not grasps or not _object_variations(cat, obj):
+            if not any(a == approach for a, _, _ in combinations):
                 at = "" if approach is None else f" from approach {approach!r}"
                 raise CatalogueError(f"objects {obj.id!r}: no combinations{at}")
-            used.update(grasps)
-        _known(obj.notes, sorted(used), f"objects {obj.id!r}.notes", "grasp type of this object")
+        used = sorted({g for _, g, _ in combinations})
+        _known(obj.notes, used, f"objects {obj.id!r}.notes", "grasp type of this object")
     for task in cat.natural:  # the subject must see which variant a prompt is for
         texts = Counter(s.text for u in _task_units(task) for s in u.steps)
         same = [t for t, n in texts.items() if n > 1]
@@ -470,16 +509,34 @@ def _object_variations(cat: Catalogue, obj: ObjectSpec) -> list[str]:
     return [v for v in cat.variations if v not in obj.exclude_variations]
 
 
+def _combinations(cat: Catalogue, obj: ObjectSpec) -> list[tuple[str | None, str, str]]:
+    """The object's allowed (approach, grasp, variation) combinations, in catalogue order. A
+    ``first_approach_only`` variation is kept, per grasp type, only on the first of the object's
+    approaches (in the order it lists them) that offers that grasp type."""
+    out, first = [], {}
+    for approach in obj.approaches or (None,):
+        for g in _object_grasps(cat, obj, approach):
+            first.setdefault(g, approach)
+            for v in _object_variations(cat, obj):
+                if not cat.variations[v].first_approach_only or first[g] == approach:
+                    out.append((approach, g, v))
+    return out
+
+
 def grasp_text(
     cat: Catalogue, obj: ObjectSpec, approach: str | None, grasp: str, variation: str, note: str
-) -> str:
-    """What the prompter shows: the object and approach, the grasp type (and the note), and the
-    variation, one line each, e.g. "Small coffee mug / Thumb-index grasp, on the lip / Light
-    grasp"."""
+) -> tuple[tuple[str, ...], int | None]:
+    """What the prompter shows, one line each: the object and approach, the grasp type (and the
+    note), the variation's lead if it has one, and the variation's text; e.g. "Small coffee mug,
+    from the top / Thumb-index grasp, on the lip / STAY ON TABLE / Light grasp". Returns the
+    lines and the index of the lead line, drawn bold (None without a lead)."""
     where = obj.name if approach is None else f"{obj.name}, {cat.approaches[approach]}"
     name = cat.grasps[grasp].name
     how = f"{name[0].upper()}{name[1:]} grasp" + (f", {note}" if note else "")
-    return "\n".join([where, how, cat.variations[variation].text])
+    var = cat.variations[variation]
+    if not var.lead:
+        return (where, how, var.text), None
+    return (where, how, var.lead, var.text), 2
 
 
 def grasp_trials(cat: Catalogue) -> list[GraspTrial]:
@@ -487,13 +544,13 @@ def grasp_trials(cat: Catalogue) -> list[GraspTrial]:
     order (object, then approach, grasp type and variation)."""
     out = []
     for obj in cat.objects:
-        for approach in obj.approaches or (None,):
-            for g in _object_grasps(cat, obj, approach):
-                note = "; ".join(n for n in (obj.note, obj.notes.get(g, "")) if n)
-                for v in _object_variations(cat, obj):
-                    text = grasp_text(cat, obj, approach, g, v, note)
-                    est = cat.variations[v].est_s
-                    out.append(GraspTrial(obj.id, approach, g, v, note, text, est, obj.condition))
+        for approach, g, v in _combinations(cat, obj):
+            note = "; ".join(n for n in (obj.note, obj.notes.get(g, "")) if n)
+            lines, bold = grasp_text(cat, obj, approach, g, v, note)
+            est = cat.variations[v].est_s
+            out.append(
+                GraspTrial(obj.id, approach, g, v, note, "\n".join(lines), est, obj.condition, bold)
+            )
     return out
 
 

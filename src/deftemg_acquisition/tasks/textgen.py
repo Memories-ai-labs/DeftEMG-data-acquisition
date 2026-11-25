@@ -35,16 +35,10 @@ from .textblock import SELF_PACED, TextBlock, TextPrompt
 # due 10 min after the first one started, later ones 20 min after the previous one.
 RECALIBRATE_S = (600.0, 1200.0)
 
-GRASP_INSTRUCTIONS = (
-    "Put the {object} in front of the subject. Each prompt names the approach, the grasp (shown "
-    "on the hand) and the task. Space starts a 3 s countdown; at Go the subject does the task, "
-    "then returns to rest, and Space marks the end. r redoes the last prompt."
-)
-NATURAL_INSTRUCTIONS = (
-    "Set out the items for these tasks. Space starts a 3 s countdown; at Go the subject does "
-    "the task, then returns to rest, and Space marks the end. Paired steps (loosen, then "
-    "tighten) are on the same item, one after the other. r redoes the last prompt."
-)
+# The task line of a block's start screen (``params["start"]["task"]``); the grasp
+# calibration's is ``textblock.GRASP_CALIBRATION_TASK``.
+GRASP_TASK = "grasp as prompted, the hand shows which fingers"
+NATURAL_TASK = "do each task as written"
 
 
 @dataclass
@@ -115,15 +109,15 @@ def _grasp_blocks(cat: Catalogue, rng: np.random.Generator, params: dict) -> lis
                 variation=t.variation,
                 highlight=cat.grasps[t.grasp].highlight,
                 est_s=t.est_s,
+                bold_line=t.bold_line,
             )
             for t in (trials[i] for i in rng.permutation(len(trials)))
         ]
         p = {
             **copy.deepcopy(params),
             "object": obj.id,
-            "object_name": obj.name,
             "conditions": [obj.condition] if obj.condition else [],
-            "instructions": GRASP_INSTRUCTIONS.format(object=obj.name.lower()),
+            "start": {"set_out": [obj.name], "task": GRASP_TASK},
         }
         if obj.condition:  # so the prompter can ask for it and check the answer
             c = cat.conditions[obj.condition]
@@ -136,6 +130,10 @@ def _natural_blocks(cat: Catalogue, rng: np.random.Generator, params: dict) -> l
     by_group: dict[str, list[NaturalUnit]] = {}
     for u in natural_units(cat):
         by_group.setdefault(u.group, []).append(u)
+    # what to set out for a group: its tasks' items, in catalogue order, each once
+    items: dict[str, dict[str, None]] = {}
+    for task in cat.natural:
+        items.setdefault(task.group, {}).update(dict.fromkeys(task.items))
     blocks = []
     for group, units in by_group.items():
         prompts = [
@@ -156,7 +154,7 @@ def _natural_blocks(cat: Catalogue, rng: np.random.Generator, params: dict) -> l
             **copy.deepcopy(params),
             "group": group,
             "conditions": [],
-            "instructions": NATURAL_INSTRUCTIONS,
+            "start": {"set_out": list(items[group]), "task": NATURAL_TASK},
         }
         blocks.append(TextBlock(group, "natural", SELF_PACED, prompts, p))
     return blocks
@@ -208,6 +206,8 @@ def generate_task_blocks(
     }
     if cat.calibration:
         params["calibration"] = cat.calibration
+    if cat.terms:  # every block carries them, so any block can show the terms slide
+        params["terms"] = [{"term": t.term, "text": t.text} for t in cat.terms]
     grasp = _grasp_blocks(cat, rng, params)
     natural = _natural_blocks(cat, rng, params)
     if not grasp and not natural:

@@ -55,7 +55,7 @@ def _of(ts, task_set):
 def test_every_combination_appears_once(cat, ts):
     grasp = Counter(_grasp_key(p) for b in _of(ts, "grasp") for p in b.prompts)
     expected = Counter((t.object, t.approach, t.grasp, t.variation) for t in grasp_trials(cat))
-    assert sum(grasp.values()) == 456 and grasp == expected and max(grasp.values()) == 1
+    assert sum(grasp.values()) == 590 and grasp == expected and max(grasp.values()) == 1
     natural = Counter(_natural_key(p) for b in _of(ts, "natural") for p in b.prompts)
     steps = [s for u in natural_units(cat) for s in u.steps]
     assert sum(natural.values()) == 31 and max(natural.values()) == 1
@@ -67,7 +67,7 @@ def test_prompt_fields_and_highlights(cat, ts):
     for b in _of(ts, "grasp"):
         for p in b.prompts:
             t = texts[_grasp_key(p)]
-            assert p.text == t.text and p.est_s == t.est_s
+            assert p.text == t.text and p.est_s == t.est_s and p.bold_line == t.bold_line
             assert p.highlight == cat.grasps[p.grasp].highlight
     assert {p.highlight for b in _of(ts, "grasp") for p in b.prompts if p.grasp == "Power"} == {
         "hand"
@@ -86,9 +86,9 @@ def test_one_block_per_object_and_group(cat, ts):
     assert [len({p.object for p in b.prompts}) for b in grasp] == [1] * len(grasp)
     assert sorted(b.params["object"] for b in grasp) == sorted(o.id for o in cat.objects)
     sizes = Counter(t.object for t in grasp_trials(cat))
-    for b in grasp:  # whole objects, 32-combination ones too
+    for b in grasp:  # whole objects, 40-combination ones too
         assert len(b.prompts) == sizes[b.params["object"]]
-    assert max(len(b.prompts) for b in grasp) == 32
+    assert max(len(b.prompts) for b in grasp) == 40
     natural = _of(ts, "natural")
     assert sorted(b.params["group"] for b in natural) == sorted({t.group for t in cat.natural})
     for b in natural:
@@ -130,7 +130,7 @@ def test_empty_catalogue_is_an_error():
 
 def test_sessions_fit_the_limit(cat, ts):
     limit = cat.timing.session_limit_s
-    assert 4 <= len(ts.sessions) <= 8
+    assert 4 <= len(ts.sessions) <= 9
     for s in ts.sessions:
         assert s.est_s <= limit
         work = sum(block_estimate_s(b, ts.timing) for b in s.blocks)
@@ -160,7 +160,7 @@ def test_calibrations_counted_as_the_prompter_schedules_them(cat):
 
 
 def test_a_block_longer_than_a_session_is_an_error(cat):
-    with pytest.raises(ValueError, match="screw_panel.*more than"):
+    with pytest.raises(ValueError, match="water_bottle_rubber.*more than"):
         generate_task_blocks(cat, replace(cat.timing, session_limit_s=900), seed=1)
     with pytest.raises(ValueError, match="no time left"):
         generate_task_blocks(cat, replace(cat.timing, session_limit_s=250), seed=1)
@@ -196,7 +196,8 @@ def test_block_params(cat, ts):
         for b in s.blocks:
             p = b.params
             assert p["seed"] == 7 and p["session"] == s.name
-            assert p["catalogue_sha256"] == cat.sha256 and p["instructions"]
+            assert p["catalogue_sha256"] == cat.sha256
+            assert "instructions" not in p and "object_name" not in p  # replaced by start
             assert p["timing"]["countdown_s"] == cat.timing.countdown_s
             assert p["timing"]["reset_s"] == cat.timing.reset_s
             assert p["plan_est_s"] == pytest.approx(block_estimate_s(b, ts.timing), abs=0.05)
@@ -219,6 +220,58 @@ def test_block_params(cat, ts):
     assert questions["tuna_can"] is None and questions[None] is None  # only where one is used
 
 
+def test_block_start(cat, ts):
+    """Each block's start screen data: what to set out and the task, as the screen shows them."""
+    start = {b.params.get("object", b.params.get("group")): b.params["start"] for b in ts.blocks}
+    assert start["tuna_can"] == {
+        "set_out": ["Tuna can"],
+        "task": "grasp as prompted, the hand shows which fingers",
+    }
+    for obj in cat.objects:
+        assert start[obj.id]["set_out"] == [obj.name]
+    # a group's tasks' items, in catalogue order, each once
+    assert start["containers"] == {
+        "set_out": ["Aquaphor tube", "Medium cream jar", "Small coffee mug", "Large coffee mug"],
+        "task": "do each task as written",
+    }
+    assert start["pages"]["set_out"] == ["Book"]
+    assert start["usb"]["set_out"] == ["USB-C plug", "USB-A plug", "A-to-C adapter", "USB ports"]
+
+
+def test_natural_items_repeated_in_a_group_are_set_out_once():
+    data = copy.deepcopy(tomllib.loads(SHIPPED.read_text()))
+    tasks = {t["id"]: t for t in data["natural"]}
+    tasks["cream_jar"]["items"] = ["Small coffee mug", "Medium cream jar"]
+    cat = parse_catalogue(data, sha256="x")
+    block = next(b for b in generate_task_blocks(cat, seed=1).blocks
+                 if b.params.get("group") == "containers")  # fmt: skip
+    assert block.params["start"]["set_out"] == [
+        "Aquaphor tube", "Small coffee mug", "Medium cream jar", "Large coffee mug"
+    ]  # fmt: skip
+
+
+def test_terms_copied_into_every_block(cat, ts):
+    terms = [{"term": t.term, "text": t.text} for t in cat.terms]
+    assert terms[0] == {"term": "Light grasp", "text": "touch the object lightly"}
+    assert len(terms) == 7
+    for b in ts.blocks:
+        assert b.params["terms"] == terms
+    assert ts.blocks[0].params["terms"] is not ts.blocks[1].params["terms"]  # copies
+    data = copy.deepcopy(tomllib.loads(SHIPPED.read_text()))
+    del data["terms"]  # optional: a catalogue without them gives blocks without them
+    blocks = generate_task_blocks(parse_catalogue(data, sha256="x"), seed=1).blocks
+    assert not any("terms" in b.params for b in blocks)
+
+
+def test_generated_blocks_round_trip(tmp_path, ts):
+    """bold_line, start and terms survive the block file."""
+    for b in ts.blocks[:3]:
+        path = tmp_path / f"{b.name}.json"
+        b.save(path)
+        assert load_block(path) == b
+    assert any(p.bold_line == 2 for b in ts.blocks for p in b.prompts)
+
+
 def test_calibration_table_embedded():
     data = copy.deepcopy(tomllib.loads(SHIPPED.read_text()))
     data["calibration"] = {"hold_s": 2.0}
@@ -235,7 +288,7 @@ def test_command_writes_sessions_and_plan(tmp_path, ts):
     out = tmp_path / "G01"
     _run("--out", out, "--seed", 7)
     plan = json.loads((out / "plan.json").read_text())
-    assert plan["seed"] == 7 and plan["counts"] == {"grasp": 456, "natural": 31}
+    assert plan["seed"] == 7 and plan["counts"] == {"grasp": 590, "natural": 31}
     assert plan["catalogue_path"] == "protocols/grasp_natural/catalogue.toml"  # repo-relative
     files = sorted(str(p.relative_to(out)) for p in out.glob("S??/*.json"))
     assert files == sorted(plan["files"])
@@ -317,7 +370,7 @@ def test_summary_writes_nothing(tmp_path, capsys):
     _run("--summary", "--out", out, "--seed", 7)
     assert not out.exists()
     text = capsys.readouterr().out
-    assert "grasp combinations: 456" in text and "natural trials: 31" in text
+    assert "grasp combinations: 590" in text and "natural trials: 31" in text
     assert "S01" in text and "est" in text and "seed 7" in text
     _run("--summary")  # no --out needed
     assert " calibrations " in text and " 1 calibrations" not in text and "1 sessions" not in text

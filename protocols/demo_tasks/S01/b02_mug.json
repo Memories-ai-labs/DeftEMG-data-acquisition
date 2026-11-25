@@ -7,7 +7,7 @@
   "params": {
     "seed": 1,
     "catalogue": "demo_tasks",
-    "catalogue_sha256": "3fa98f998ebb02b62524cbe6d57a1421d60391caed5b6c859107408feeb908b6",
+    "catalogue_sha256": "db55d29d7e472471dd9fbb8fc4d0fd67ce92aeb8d81a3615024bb32f64236132",
     "timing": {
       "countdown_s": 3.0,
       "reset_s": 5.0,
@@ -20,12 +20,38 @@
         1200.0
       ]
     },
+    "terms": [
+      {
+        "term": "Light grasp",
+        "text": "touch the object lightly"
+      },
+      {
+        "term": "Grasp and squeeze",
+        "text": "touch the object and squeeze at a sub-maximum force"
+      },
+      {
+        "term": "Stay on table",
+        "text": "the object stays on the table the whole time"
+      },
+      {
+        "term": "Brief maximum",
+        "text": "grasp as hard as is comfortable, for the prompt duration"
+      },
+      {
+        "term": "Highlighted fingertips",
+        "text": "use only the fingertips lit on the hand (the whole hand if all of it is lit)"
+      }
+    ],
     "object": "mug",
-    "object_name": "Coffee mug",
     "conditions": [
       "mug_fill"
     ],
-    "instructions": "Put the coffee mug in front of the subject. Each prompt names the approach, the grasp (shown on the hand) and the task. Space starts a 3 s countdown; at Go the subject does the task, then returns to rest, and Space marks the end. r redoes the last prompt.",
+    "start": {
+      "set_out": [
+        "Coffee mug"
+      ],
+      "task": "grasp as prompted, the hand shows which fingers"
+    },
     "condition_questions": {
       "mug_fill": {
         "ask": "Mug: filled or empty?",
@@ -40,7 +66,7 @@
   },
   "prompts": [
     {
-      "text": "Coffee mug, from the top\nPower grasp\nLight grasp",
+      "text": "Coffee mug, from the top\nPower grasp\nSTAY ON TABLE\nLight grasp",
       "object": "mug",
       "grasp": "Power",
       "approach": "top",
@@ -50,10 +76,11 @@
       "highlight": "hand",
       "duration_s": null,
       "onset_s": null,
-      "est_s": 4.0
+      "est_s": 4.0,
+      "bold_line": 2
     },
     {
-      "text": "Coffee mug, from the side\nThumb-index grasp, on the lip\nLight grasp",
+      "text": "Coffee mug, from the side\nThumb-index grasp, on the lip\nSTAY ON TABLE\nLight grasp",
       "object": "mug",
       "grasp": "TI",
       "approach": "side",
@@ -66,10 +93,11 @@
       ],
       "duration_s": null,
       "onset_s": null,
-      "est_s": 4.0
+      "est_s": 4.0,
+      "bold_line": 2
     },
     {
-      "text": "Coffee mug, from the top\nThumb-index grasp, on the lip\nLight grasp",
+      "text": "Coffee mug, from the top\nThumb-index grasp, on the lip\nSTAY ON TABLE\nLight grasp",
       "object": "mug",
       "grasp": "TI",
       "approach": "top",
@@ -82,10 +110,11 @@
       ],
       "duration_s": null,
       "onset_s": null,
-      "est_s": 4.0
+      "est_s": 4.0,
+      "bold_line": 2
     },
     {
-      "text": "Coffee mug, from the side\nPower grasp\nLight grasp",
+      "text": "Coffee mug, from the side\nPower grasp\nSTAY ON TABLE\nLight grasp",
       "object": "mug",
       "grasp": "Power",
       "approach": "side",
@@ -95,7 +124,8 @@
       "highlight": "hand",
       "duration_s": null,
       "onset_s": null,
-      "est_s": 4.0
+      "est_s": 4.0,
+      "bold_line": 2
     }
   ]
 }

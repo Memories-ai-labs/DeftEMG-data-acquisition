@@ -2,7 +2,7 @@
   "seed": 1,
   "catalogue": "demo_tasks",
   "catalogue_path": "protocols/demo_tasks/catalogue.toml",
-  "catalogue_sha256": "3fa98f998ebb02b62524cbe6d57a1421d60391caed5b6c859107408feeb908b6",
+  "catalogue_sha256": "db55d29d7e472471dd9fbb8fc4d0fd67ce92aeb8d81a3615024bb32f64236132",
   "timing": {
     "countdown_s": 3.0,
     "reset_s": 5.0,

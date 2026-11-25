@@ -64,3 +64,24 @@ def test_demo_task_blocks_are_their_catalogue_generated(tmp_path, capsys):
     assert shipped == sorted(p.relative_to(out) for p in out.glob("S??/*.json"))
     for rel in shipped:
         assert (out / rel).read_text() == (DEMO_TASKS / rel).read_text(), rel
+
+
+def test_demo_task_blocks_show_the_new_screens():
+    """The demo blocks carry what the prompter's screens need: the bold lead, the start screen's
+    lines and the terms slide."""
+    blocks = {p.stem: load_block(p) for p in sorted(DEMO_TASKS.glob("S01/*.json"))}
+    mug = blocks["b02_mug"]
+    assert mug.params["start"] == {
+        "set_out": ["Coffee mug"],
+        "task": "grasp as prompted, the hand shows which fingers",
+    }
+    for p in mug.prompts:
+        assert p.bold_line == 2 and p.text.split("\n")[2] == "STAY ON TABLE", p
+    assert blocks["b03_jar_and_pages"].params["start"] == {
+        "set_out": ["Jar", "Book"],
+        "task": "do each task as written",
+    }
+    terms = [t["term"] for t in mug.params["terms"]]
+    assert terms[:3] == ["Light grasp", "Grasp and squeeze", "Stay on table"]
+    assert all(b.params["terms"] == mug.params["terms"] for b in blocks.values())
+    assert all(p.bold_line is None for p in blocks["b03_jar_and_pages"].prompts)
