@@ -1,5 +1,6 @@
 """The shipped example session and protocol files stay loadable."""
 
+import subprocess
 from pathlib import Path
 
 from deftemg_acquisition.cli import make_task_sequences
@@ -20,9 +21,26 @@ def test_example_session_loads():
     assert trial.emg_uv.shape[1] == 18 and len(trial.prompts.onset_ns) == 8
 
 
+def shipped_protocol_files() -> list[Path]:
+    """The block files in ``protocols/`` that git tracks (a set made there by following the
+    README is not one of them), or every one found if git can't tell. A set's plan.json is not
+    a block."""
+    try:
+        out = subprocess.run(
+            ["git", "ls-files", "-z", "--", "protocols"],
+            cwd=ROOT, capture_output=True, check=True, text=True,
+        ).stdout  # fmt: skip
+        paths = [ROOT / f for f in out.split("\0") if f.endswith(".json")]
+    except (OSError, subprocess.CalledProcessError):
+        paths = []
+    if not paths:  # not a git checkout (an unpacked source copy)
+        paths = list((ROOT / "protocols").rglob("*.json"))
+    return sorted(p for p in paths if p.name != PLAN)
+
+
 def test_protocol_files_load():
-    # every block file, lane or text; a generated set's plan.json is not a block
-    paths = sorted(p for p in (ROOT / "protocols").rglob("*.json") if p.name != PLAN)
+    # every shipped block file, lane or text
+    paths = shipped_protocol_files()
     assert len(paths) == 65
     blocks = {path: load_block(path) for path in paths}
     for path, block in blocks.items():
@@ -34,12 +52,14 @@ def test_protocol_files_load():
     assert sum(isinstance(b, Sequence) for b in blocks.values()) == 62
 
 
-def test_demo_task_blocks_are_their_catalogue_generated(tmp_path):
+def test_demo_task_blocks_are_their_catalogue_generated(tmp_path, capsys):
     """The demo text blocks are what their catalogue gives with the seed they were made with."""
     out = tmp_path / "demo_tasks"
     make_task_sequences.main(
         ["--catalogue", str(DEMO_TASKS / "catalogue.toml"), "--out", str(out), "--seed", "1"]
     )
+    summary = capsys.readouterr().out  # its one session and calibration, in the singular
+    assert "1 calibration " in summary and "1 session," in summary
     shipped = sorted(p.relative_to(DEMO_TASKS) for p in DEMO_TASKS.glob("S??/*.json"))
     assert shipped == sorted(p.relative_to(out) for p in out.glob("S??/*.json"))
     for rel in shipped:

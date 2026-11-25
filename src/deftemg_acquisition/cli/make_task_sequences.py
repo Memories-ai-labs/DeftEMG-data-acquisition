@@ -153,6 +153,19 @@ def write_set(out: Path, ts: TaskSet, plan: dict, old: list[Path]) -> None:
     shutil.rmtree(stage)
 
 
+# the source checkout this module runs from (src/deftemg_acquisition/cli/ -> the repo)
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def catalogue_label(catalogue: Path) -> str:
+    """The catalogue's path as plan.json records it: relative to the repo when the catalogue is
+    inside it, else just its file name, so the plan doesn't record where a computer keeps it."""
+    try:
+        return Path(catalogue).resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return Path(catalogue).name
+
+
 def plan_dict(ts: TaskSet, catalogue: Path, sha256: str, name: str) -> dict:
     sessions = []
     for s in ts.sessions:
@@ -179,7 +192,7 @@ def plan_dict(ts: TaskSet, catalogue: Path, sha256: str, name: str) -> dict:
     return {
         "seed": ts.seed,
         "catalogue": name,
-        "catalogue_path": str(catalogue),
+        "catalogue_path": catalogue_label(catalogue),
         "catalogue_sha256": sha256,
         "timing": {**asdict(ts.timing), "recalibrate_s": list(ts.recalibrate_s)},
         "capacity_s": round(ts.capacity_s, 1),
@@ -210,11 +223,13 @@ def print_sessions(ts: TaskSet, plan: dict) -> None:
     for s in plan["sessions"]:
         print(
             f"{s['session']}  {len(s['blocks']):2d} blocks  {s['grasp_trials']:3d} grasp + "
-            f"{s['natural_trials']:2d} natural trials  {s['calibrations']} calibrations  "
+            f"{s['natural_trials']:2d} natural trials  {s['calibrations']} calibration"
+            f"{'' if s['calibrations'] == 1 else 's'}  "
             f"est {s['est_s'] / 60:.1f} min"
         )
     total = sum(s.est_s for s in ts.sessions)
-    print(f"{len(ts.sessions)} sessions, {total / 3600:.1f} h in all")
+    n = len(ts.sessions)
+    print(f"{n} session{'' if n == 1 else 's'}, {total / 3600:.1f} h in all")
 
 
 def main(argv: list[str] | None = None) -> None:

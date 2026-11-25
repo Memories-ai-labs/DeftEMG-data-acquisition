@@ -194,7 +194,11 @@ def test_text_block_replays_in_text_mode(text_trial, prompter_trial):
         assert 0 < mark.onset_s < mark.offset_s < d.duration_s
     pg.mkQApp()
     win = ReplayWindow(d, window_s=1.0, autoplay=False)
-    assert win.prompter.text_mode and win.prompter.text_view.phase == IDLE  # before the block
+    # Replay's t = 0 is the first EMG sample's fitted time, and the block's start (its first
+    # preview) is taken just after the trial starts, so t = 0 may already be in that preview
+    assert win.now == 0 and win.prompter.text_mode
+    before = d.text_view.start_ns > d.t0_ns
+    assert win.prompter.text_view.phase == (IDLE if before else PREVIEW)
     win.jump_prompt(+1)
     win.seek(win.now + 0.05)
     view = win.prompter.text_view

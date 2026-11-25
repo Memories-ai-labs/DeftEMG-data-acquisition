@@ -328,11 +328,11 @@ it comes before:
 - A session's first calibration matches its first task block, and a later one the block it is
   put in front of.
 - **Before text blocks** (grasp and natural tasks): a grasp calibration, saved with `task_set:
-  grasp_calibration` (25 s). After the rest, one brief maximum grasp (1.5 s, 3 s apart) of
-  each kind: thumb-index, thumb-index-middle and all fingertips on a hardcover book, then,
-  after 6 s more to swap objects, a power grasp on a ball. The screen previews each grasp,
-  highlighted on the hand, and counts down to it. A catalogue's `[calibration]` table changes
-  the times, grasps and objects.
+  grasp_calibration` (about 26 s: 25 s of prompts plus the 1.5 s tail). After the rest, one
+  brief maximum grasp (1.5 s, 3 s apart) of each kind: thumb-index, thumb-index-middle and
+  all fingertips on a hardcover book, then, after 6 s more to swap objects, a power grasp on a
+  ball. The screen previews each grasp, highlighted on the hand, and counts down to it. A
+  catalogue's `[calibration]` table changes the times, grasps and objects.
 
 The two kinds keep separate schedules: the prompter puts a calibration before the session's
 first lane block and a grasp calibration before its first text block, and the 10 / 20 minute
@@ -469,8 +469,8 @@ pixi run prompter --subject S01 --wuji protocols/G01/S01    # one session, with 
 pixi run prompter --simulate --condition mug_fill=empty protocols/demo_tasks/S01  # no hardware
 ```
 
-**The catalogue** (`protocols/grasp_natural/catalogue.toml`; TOML, comments at its top list
-every key) holds:
+**The catalogue** (`protocols/grasp_natural/catalogue.toml`; TOML, comments in the file
+describe every key) holds:
 - **Grasp types** (the fingertips highlighted on the hand, or the whole hand), **variations**
   (light grasp, grasp and squeeze, pick up and place, ...; each with an estimated time),
   **approaches** and session **conditions**.
@@ -855,6 +855,8 @@ sample was taken.
 - `protocols/`: prompt sequence files; `grasp_natural/catalogue.toml`, the grasp and
   natural-task catalogue; `demo_tasks/`, a tiny catalogue and the three text blocks made from it.
 - `examples/`: a synthetic example session.
+- `scripts/`: `glove_memory_check.py`, a glove recorder check of peak memory over one long
+  trial and of the time to save it, with a stand-in glove SDK.
 - `tests/`: pytest tests (no hardware needed).
 - `data/raw`, `data/processed`, `data/synthetic`: local data (git-ignored).
 

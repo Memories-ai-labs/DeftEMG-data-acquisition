@@ -236,6 +236,7 @@ def test_command_writes_sessions_and_plan(tmp_path, ts):
     _run("--out", out, "--seed", 7)
     plan = json.loads((out / "plan.json").read_text())
     assert plan["seed"] == 7 and plan["counts"] == {"grasp": 456, "natural": 31}
+    assert plan["catalogue_path"] == "protocols/grasp_natural/catalogue.toml"  # repo-relative
     files = sorted(str(p.relative_to(out)) for p in out.glob("S??/*.json"))
     assert files == sorted(plan["files"])
     assert [s["session"] for s in plan["sessions"]] == [s.name for s in ts.sessions]
@@ -305,6 +306,12 @@ def test_guard_rejects_a_plan_listing_other_paths(tmp_path):
     assert victim.exists()
 
 
+def test_plan_names_a_catalogue_outside_the_repo_by_file_name(tmp_path):
+    shutil.copy(SHIPPED, tmp_path / "mine.toml")
+    cli.main(["--catalogue", str(tmp_path / "mine.toml"), "--out", str(tmp_path / "G01")])
+    assert json.loads((tmp_path / "G01" / "plan.json").read_text())["catalogue_path"] == "mine.toml"
+
+
 def test_summary_writes_nothing(tmp_path, capsys):
     out = tmp_path / "G01"
     _run("--summary", "--out", out, "--seed", 7)
@@ -313,6 +320,7 @@ def test_summary_writes_nothing(tmp_path, capsys):
     assert "grasp combinations: 456" in text and "natural trials: 31" in text
     assert "S01" in text and "est" in text and "seed 7" in text
     _run("--summary")  # no --out needed
+    assert " calibrations " in text and " 1 calibrations" not in text and "1 sessions" not in text
 
 
 def test_command_options(tmp_path, capsys):
