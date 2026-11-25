@@ -1,12 +1,16 @@
-"""Run the scrolling finger-press prompter while recording EMG.
+"""Run the scrolling finger-press prompter, or text-prompt blocks, while recording EMG.
 
     pixi run prompter --port /dev/cu.usbmodem1101 --subject S01 --viewer protocols/demo
     pixi run prompter --simulate protocols/demo/d2_multi_b01.json
     pixi run prompter --remote <source_id or host> --viewer protocols/demo   # see below
+    pixi run prompter --wuji protocols/G01/S01   # grasp and natural-task blocks, with the glove
 
-Sequences are JSON files from ``make-sequences``; directories are expanded (sorted by name).
-Keys in the prompter window: Shift start block, Enter end early, Left/Right choose block,
-Esc quit.
+Blocks are JSON files: lane sequences from ``make-sequences``, text blocks from
+``make-task-sequences``; directories are expanded (sorted by name; a set's ``plan.json`` is
+skipped). Lane and text blocks can be mixed. Keys in the prompter window: Shift start block,
+Enter end early, Left/Right choose block, Esc quit; in a text block, Space starts a prompt's
+countdown and marks its end, and r redoes the last prompt. Each block is saved when it ends;
+the window says "Saving..." until it is (with a glove, about 2 s per block minute).
 
 Asks for your user ID and, if you have recorded before, whether you re-donned the band since
 your last session (a new donning id if yes; the same one if no). ``--subject`` and ``--redon`` /
@@ -17,17 +21,24 @@ as hard as is comfortable (``--calibration-reps``: how many), matching the task 
 pinch or squeeze blocks, a pinch or squeeze of the thumb with each other finger (thumb implied,
 as in those blocks); otherwise a press of each digit. It sets the session's noise and
 maximum-effort levels (``deftemg_acquisition.data.calibration``: e.g. ``press_fraction`` gives
-low / high presses as a fraction of the maximum of the same digit or pinch).
+low / high presses as a fraction of the maximum of the same digit or pinch). Text blocks have
+their own calibration, a brief maximum of each grasp, kept on its own schedule: a session with
+both kinds of block has a calibration of each kind before the first block of that kind.
 Another calibration block comes up ~10 minutes later, then every 20 minutes (``--recalibrate``:
 minutes to the second block, then between later ones), before the next block once it is due,
 so every trial has a recent calibration before it. ``--no-calibration`` skips them
 all.
 
-``--effort-meter`` adds an effort bar under the target row once a calibration block is done:
-overall EMG effort relative to the calibration maximum of what is prompted (a digit, a pinch,
-or a chord's digits together), with a zone per level (``--effort-zones``, default low 20-40 %,
-high 65-85 %). Keep the bar in the outlined zone while holding a press. Its trace is saved with
-each block, and the trial's metadata records that the meter was on.
+``--effort-meter`` adds an effort bar under the target row once a calibration block is done
+(lane blocks only): overall EMG effort relative to the calibration maximum of what is prompted
+(a digit, a pinch, or a chord's digits together), with a zone per level (``--effort-zones``,
+default low 20-40 %, high 65-85 %). Keep the bar in the outlined zone while holding a press. Its
+trace is saved with each block, and the trial's metadata records that the meter was on.
+
+Session conditions (e.g. whether a water bottle is filled): text blocks name the ones they
+need, and the prompter asks for them at the start (``--condition NAME=VALUE`` answers in
+advance; without a terminal every one must be given). They are saved in the session's and those
+blocks' metadata, and hold for the whole session: to change one, start a new session.
 
 ``--viewer`` opens the live viewer in its own window (and process, so it can't slow the
 prompter), the two side by side at full height: the prompter on the left, the viewer on the
@@ -48,6 +59,7 @@ Other code can add options, task window plugins and viewer options (``main``'s `
 from __future__ import annotations
 
 import argparse
+import difflib
 import logging
 import subprocess
 import sys
@@ -63,18 +75,121 @@ from deftemg_acquisition.acquisition import (
     wuji,
 )
 from deftemg_acquisition.acquisition.session import source_id_for
-from deftemg_acquisition.tasks.app import TaskPlugin, TaskWindow
+from deftemg_acquisition.cli.make_task_sequences import PLAN
+from deftemg_acquisition.tasks.app import (
+    TaskPlugin,
+    TaskWindow,
+    block_conditions,
+    calibration_family,
+)
 from deftemg_acquisition.tasks.effort import ZONES
 from deftemg_acquisition.tasks.prompter import DEFAULT_LOOKAHEAD_S
-from deftemg_acquisition.tasks.sequence import CALIBRATION_REPS, Sequence, calibration_for
+from deftemg_acquisition.tasks.sequence import CALIBRATION_REPS, Sequence
+from deftemg_acquisition.tasks.textblock import TextBlock, calibration_for_block, load_block
 from deftemg_acquisition.viz.screen import fit_font
+
+Blocks = list[tuple[Path, Sequence | TextBlock]]
 
 
 def expand(paths: list[Path]) -> list[Path]:
     out = []
     for p in paths:
-        out += sorted(p.glob("*.json")) if p.is_dir() else [p]
+        # a generated set's plan (make-task-sequences) sits beside its blocks
+        out += sorted(f for f in p.glob("*.json") if f.name != PLAN) if p.is_dir() else [p]
     return out
+
+
+def with_calibrations(blocks: Blocks, reps: int = CALIBRATION_REPS) -> Blocks:
+    """``blocks`` with a calibration before the first block of each kind (lane, text): like
+    that block (``calibration_for_block``), so lane-only sessions start as they always have."""
+    out: Blocks = []
+    seen = set()
+    for path, block in blocks:
+        if calibration_family(block) not in seen:
+            seen.add(calibration_family(block))
+            cal = calibration_for_block(block, reps)
+            out.append((Path(f"built-in/{cal.name}.json"), cal))
+        out.append((path, block))
+    return out
+
+
+def condition_questions(blocks: Blocks) -> dict[str, dict | None]:
+    """The session conditions the blocks use: {name: {"ask", "choices"}} from the blocks'
+    ``params["condition_questions"]``, or None for one no block describes (any non-empty value
+    is then accepted). Exits if one is described badly (``condition_questions`` must be a table
+    of conditions) or two blocks describe the same condition differently."""
+    out: dict[str, dict | None] = {}
+    source: dict[str, Path] = {}
+    for path, block in blocks:
+        described = block.params.get("condition_questions", {})
+        if not isinstance(described, dict):
+            sys.exit(f"{path}: condition_questions must be a table of conditions")
+        for name in block_conditions(block):
+            out.setdefault(name, None)
+            q = described.get(name)
+            if q is None:
+                continue
+            ok = isinstance(q, dict) and isinstance(q.get("ask"), str)
+            choices = q.get("choices") if ok else None
+            if not (isinstance(choices, list) and choices
+                    and all(isinstance(c, str) and c for c in choices)):  # fmt: skip
+                sys.exit(f"{path}: condition_questions.{name}: need an ask and choices")
+            q = {"ask": q["ask"], "choices": choices}
+            if out[name] is None:
+                out[name], source[name] = q, path
+            elif out[name] != q:
+                sys.exit(f"condition {name}: {source[name]} and {path} ask it differently")
+    return out
+
+
+def ask_conditions(
+    questions: dict[str, dict | None],
+    given: dict[str, str],
+    interactive: bool,
+    ask=input,
+    say=print,
+) -> dict[str, str]:
+    """The session's condition values: those ``given`` (``--condition``) for the conditions in
+    ``questions``, the rest asked on the terminal. A given name no block uses is ignored, with
+    a note (naming a close one in case of a typo, unless that one was given too); a value not
+    among the choices exits, and so does a condition left unanswered without a terminal."""
+
+    def bad(name: str, value: str) -> str | None:
+        q = questions[name]
+        if not value:
+            return f"{name}: give a value"
+        if q is not None and value not in q["choices"]:
+            return f"{name}: {value!r} is not one of {', '.join(q['choices'])}"
+        return None
+
+    for name in given:
+        if name not in questions:
+            close = difflib.get_close_matches(name, list(questions), n=1, cutoff=0.85)
+            hint = f" (did you mean {close[0]}?)" if close and close[0] not in given else ""
+            say(f"--condition {name}: no block here uses it; ignored{hint}")
+        elif why := bad(name, given[name]):
+            sys.exit(f"--condition {why}")
+    values = {k: v for k, v in given.items() if k in questions}
+    missing = [k for k in questions if k not in values]
+    if missing and not interactive:
+        sys.exit("no terminal to ask: pass --condition NAME=VALUE for " + ", ".join(missing))
+    try:
+        for name in missing:
+            q = questions[name]
+            text = f"{q['ask']} [{'/'.join(q['choices'])}]: " if q else f"Condition {name}: "
+            while (why := bad(name, value := ask(text).strip())) is not None:
+                say(why)
+            values[name] = value
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit("\nno answer: stopping") from None
+    return {k: values[k] for k in questions}
+
+
+def _condition_arg(text: str) -> tuple[str, str]:
+    name, eq, value = text.partition("=")
+    if not eq or not name.strip():
+        raise argparse.ArgumentTypeError(f"expected NAME=VALUE, got {text!r}")
+    return name.strip(), value.strip()
 
 
 class PrompterExtension:
@@ -97,7 +212,9 @@ class PrompterExtension:
 
 def parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("sequences", type=Path, nargs="+", help="sequence files or directories")
+    ap.add_argument(
+        "sequences", type=Path, nargs="+", help="block files (lane or text) or directories"
+    )
     ap.add_argument("--port", help="serial port (default: auto-detect)")
     ap.add_argument("--simulate", action="store_true", help="use a simulated armband")
     ap.add_argument(
@@ -183,6 +300,10 @@ def parser() -> argparse.ArgumentParser:
         "--viewer", action="store_true",
         help="also open the live viewer, on the right of the screen (the prompter on the left)",
     )  # fmt: skip
+    ap.add_argument(
+        "--condition", type=_condition_arg, action="append", default=[], metavar="NAME=VALUE",
+        help="a session condition the text blocks need (asked for if not given); repeatable",
+    )  # fmt: skip
     ap.add_argument("--no-stream", action="store_true", help="don't publish over LSL")
     ap.add_argument("-v", "--verbose", action="store_true")
     subjects.add_arguments(ap)
@@ -209,18 +330,28 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
     sequences = []
     for path in expand(args.sequences):
         try:
-            seq = Sequence.load(path)
-            seq.level_names  # noqa: B018 (raises for a sequence mixing level codings)
+            seq = load_block(path)
+            if isinstance(seq, Sequence):
+                seq.level_names  # noqa: B018 (raises for a sequence mixing level codings)
+            block_conditions(seq)  # raises for a malformed list
         except (OSError, ValueError, KeyError, TypeError) as e:
             raise SystemExit(f"{path}: not a usable sequence ({e})") from None
         sequences.append((path, seq))
     if not sequences:
         sys.exit("no sequence files found")
+    if args.effort_meter and all(isinstance(b, TextBlock) for _, b in sequences):
+        print("--effort-meter: ignored (it is for lane blocks; these are all text blocks)")
+    given: dict[str, str] = {}
+    for name, value in args.condition:
+        if given.setdefault(name, value) != value:
+            sys.exit(f"--condition {name}: given twice ({given[name]!r}, {value!r})")
+    # checked and asked before the session opens: a missing answer records nothing
+    conditions = ask_conditions(condition_questions(sequences), given, sys.stdin.isatty())
     if not args.no_calibration:  # per-session calibration first
-        # like the first task block: maximum pinches before pinch blocks, squeezes before
-        # squeeze blocks, presses otherwise (later ones match the block they come before)
-        block = calibration_for(sequences[0][1].task_set, args.calibration_reps)
-        sequences.insert(0, (Path(f"built-in/{block.name}.json"), block))
+        # like the first task block of its kind: maximum pinches before pinch blocks, squeezes
+        # before squeeze blocks, presses otherwise, grasps before text blocks (later ones match
+        # the block they come before)
+        sequences = with_calibrations(sequences, args.calibration_reps)
     simulated = args.simulate or bool(args.replay)  # a replay is no new donning either
     donning = subjects.donning_from_args(
         argparse.Namespace(**{**vars(args), "simulate": simulated}), args.data_dir
@@ -230,6 +361,8 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
     if simulated:
         metadata["simulated"] = True
     metadata.update(donning.metadata())
+    if conditions:
+        metadata["conditions"] = conditions
     config = SessionConfig(
         port=args.port,
         powerline_hz=args.powerline_hz,
@@ -297,6 +430,7 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
                 effort_meter=args.effort_meter,
                 effort_zones={"low": (lo_min, lo_max), "high": (hi_min, hi_max)},
                 plugins=plugins,
+                conditions=conditions,
             )
             win.show()
             if left is not None:

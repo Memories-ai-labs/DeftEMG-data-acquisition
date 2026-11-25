@@ -209,6 +209,14 @@ def test_block_params(cat, ts):
     assert conditions["water_bottle_rubber"] == ["bottle_fill_rubber"]
     assert conditions["water_bottle_metal"] == ["bottle_fill_metal"]
     assert conditions["tuna_can"] == [] and conditions[None] == []
+    questions = {b.params.get("object"): b.params.get("condition_questions") for b in ts.blocks}
+    assert questions["water_bottle_rubber"] == {
+        "bottle_fill_rubber": {
+            "ask": cat.conditions["bottle_fill_rubber"].ask,
+            "choices": ["filled", "empty"],
+        }
+    }
+    assert questions["tuna_can"] is None and questions[None] is None  # only where one is used
 
 
 def test_calibration_table_embedded():

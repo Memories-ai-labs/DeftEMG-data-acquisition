@@ -916,3 +916,77 @@ def test_a_runner_that_cannot_start_leaves_no_trial_open(tmp_path, monkeypatch):
         assert win.running and win.prompter.text_view.index == 0
         _key(win, Qt.Key_Return)
     assert len(_records(tmp_path)) == 1
+
+
+def test_saving_shows_until_each_save_returns(tmp_path, monkeypatch):
+    """Before a block (text or lane) is saved, the window shows "Saving...", painted and with
+    the event queue run (not key presses), since the save blocks the event loop until done."""
+    from pyqtgraph.Qt import QtWidgets
+
+    events: list[str] = []
+    process = QtWidgets.QApplication.processEvents
+
+    def processed(*flags):
+        keys_wait = flags == (QtCore.QEventLoop.ExcludeUserInputEvents,)
+        events.append("processed, keys wait" if keys_wait else "processed all")
+        process(*flags)
+
+    monkeypatch.setattr(QtWidgets.QApplication, "processEvents", processed)
+    with _window(tmp_path, [_grasp_block(n=2), _lane("a")], Clock()) as win:
+        repaint, end_trial = win.prompter.repaint, win.session.end_trial
+
+        def painted():
+            events.append(f"painted {win.prompter.message}")
+            repaint()
+
+        def saved(**kw):
+            events.append(f"saving, showing {win.prompter.message}")
+            assert win.prompter.t0_perf is None  # the run has ended: nothing scrolls on
+            if win.prompter.text_mode:
+                assert win.prompter.text_view == TextView(IDLE)
+            return end_trial(**kw)
+
+        win.prompter.repaint, win.session.end_trial = painted, saved
+        for key in (Qt.Key_Shift, Qt.Key_Return, Qt.Key_Right, Qt.Key_Shift, Qt.Key_Return):
+            _key(win, key)
+        assert "Saving" not in win.prompter.message and not win.running
+    assert (
+        events
+        == [
+            "painted Saving...",
+            "processed, keys wait",
+            "saving, showing Saving...",
+            "processed all",  # the keys pressed during the save, delivered and dropped
+        ]
+        * 2
+    )
+    assert [r["label"] for r in _records(tmp_path)] == ["tuna_can", "a"]
+
+
+@pytest.mark.parametrize("block", ["text", "lane"])
+def test_keys_pressed_while_saving_are_dropped(tmp_path, block):
+    """Shift or Esc pressed at the "Saving..." screen neither starts the next block nor
+    quits once the save returns: they are delivered after it, and dropped."""
+    from pyqtgraph.Qt import QtWidgets
+
+    blocks = (
+        [_grasp_block(n=2), _grasp_block("mug", n=2)]
+        if block == "text"
+        else [_lane("a"), _lane("b")]
+    )
+    with _window(tmp_path, blocks, Clock()) as win:
+        win.show()
+        end_trial = win.session.end_trial
+
+        def saved(**kw):
+            for key in (Qt.Key_Shift, Qt.Key_Escape):
+                event = QtGui.QKeyEvent(QtCore.QEvent.KeyPress, key, Qt.NoModifier)
+                QtWidgets.QApplication.postEvent(win, event)
+            return end_trial(**kw)
+
+        win.session.end_trial = saved
+        _key(win, Qt.Key_Shift)
+        _key(win, Qt.Key_Return)
+        assert not win.running and win.isVisible() and not win._saving
+        _key(win, Qt.Key_Shift)  # keys work again once saved
+        assert win.running

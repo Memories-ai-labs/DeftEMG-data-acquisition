@@ -227,6 +227,7 @@ class TaskWindow(QtWidgets.QMainWindow):
         self._runner: SelfPacedRunner | None = None
         self._finish_at_ns: int | None = None  # a finished text block is saved at this time
         self._close_after = False  # Esc finished a text block: quit once it is saved
+        self._saving = False  # a block is being saved: keys are dropped
         # Early-ended self-paced text blocks, keyed by the block's identity (not its index:
         # calibration blocks are put in and taken out, shifting the indices)
         self._resume: dict[int, ResumePoint] = {}
@@ -585,7 +586,7 @@ class TaskWindow(QtWidgets.QMainWindow):
             arrays["effort_level"] = np.array(level, np.int8)
         seq = self.sequence
         self._plugins("block_ending", seq, arrays)
-        result = self.session.end_trial(
+        result = self._save(
             arrays=arrays,
             completed=completed,
             scroll_start_host_ns=self._t0_ns,
@@ -598,13 +599,35 @@ class TaskWindow(QtWidgets.QMainWindow):
         arrays, completed = self._text_arrays()
         block = self.sequence
         self._plugins("block_ending", block, arrays)
-        result = self.session.end_trial(arrays=arrays, completed=completed,
-                                        elapsed_s=round(elapsed, 3))  # fmt: skip
+        result = self._save(arrays=arrays, completed=completed, elapsed_s=round(elapsed, 3))
         self._note_resume(block, completed, runner.resume_index(), result.npz_path)
         self._after_block(result, block, completed)
         if self._close_after:
             self._close_after = False
             self.close()
+
+    def _save(self, **trial):
+        """Save the block, showing "Saving..." until the save returns. Keys pressed meanwhile
+        are dropped: they are delivered once the save is done, while still marked as saving,
+        so a Shift or Esc pressed at the saving screen starts or quits nothing."""
+        self._saving = True
+        try:
+            self._show_saving()
+            return self.session.end_trial(**trial)
+        finally:
+            QtWidgets.QApplication.processEvents()  # the keys queued during the save
+            self._saving = False
+
+    def _show_saving(self) -> None:
+        """Paint "Saving..." now (a glove's arrays take a while: about 2 s per block minute),
+        and process the events it needs, since the save blocks the event loop. Key presses
+        stay queued until the save is done."""
+        self.prompter.end_run()  # the block's paint times are in its arrays already
+        if self.prompter.text_mode:
+            self.prompter.text_view = TextView(IDLE)
+        self.prompter.message = "Saving..."
+        self.prompter.repaint()
+        QtWidgets.QApplication.processEvents(QtCore.QEventLoop.ExcludeUserInputEvents)
 
     def _after_block(self, result, seq: Sequence | TextBlock, completed: bool) -> None:
         """A block has been saved: note failed sources, move on, show the idle screen."""
@@ -725,7 +748,7 @@ class TaskWindow(QtWidgets.QMainWindow):
     def keyPressEvent(self, event) -> None:
         key = event.key()
         Qt = QtCore.Qt
-        if event.isAutoRepeat():
+        if event.isAutoRepeat() or self._saving:
             return
         if self._runner is not None and self._text_key(key):
             return

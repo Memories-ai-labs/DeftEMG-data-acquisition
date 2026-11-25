@@ -125,6 +125,9 @@ def _grasp_blocks(cat: Catalogue, rng: np.random.Generator, params: dict) -> lis
             "conditions": [obj.condition] if obj.condition else [],
             "instructions": GRASP_INSTRUCTIONS.format(object=obj.name.lower()),
         }
+        if obj.condition:  # so the prompter can ask for it and check the answer
+            c = cat.conditions[obj.condition]
+            p["condition_questions"] = {c.id: {"ask": c.ask, "choices": list(c.choices)}}
         blocks.append(TextBlock(obj.id, "grasp", SELF_PACED, prompts, p))
     return blocks
 

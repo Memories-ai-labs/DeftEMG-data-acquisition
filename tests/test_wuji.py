@@ -1151,3 +1151,42 @@ def test_a_trial_started_while_the_last_one_is_copied_keeps_its_own_start(monkey
     monkeypatch.setattr(buf, "_arrays", start_first)
     arrays, summary = buf.stop(10**9 // 2)
     assert arrays["A_tactile_seq"].tolist() == list(range(10)) and summary["rate_hz"] == 20.0
+
+
+def test_a_text_block_records_the_glove(fake_sdk, tmp_path):
+    """A text-prompt block run in the prompter window with a glove: its trial has the glove's
+    arrays and the glove's ``sources`` metadata, as lane blocks do."""
+    import json
+
+    import pyqtgraph as pg
+
+    from deftemg_acquisition.tasks.app import TaskWindow
+    from deftemg_acquisition.tasks.textblock import TextBlock, TextPrompt
+
+    fake_sdk.found["A"] = "right"
+    fake_sdk.offers.intersection_update({"tactile", "tactile_point_cloud"})
+    prompts = [TextPrompt("Ball, power grasp", "ball", grasp="Power", highlight="hand")]
+    block = TextBlock("ball", "grasp", "self_paced", prompts)
+    rng = np.random.default_rng(0)
+    pg.mkQApp()
+    with _session(tmp_path, [WujiGloveRecorder()]) as session:
+        win = TaskWindow(session, [(tmp_path / "ball.json", block)], tail_s=0.1)
+        win.start_block()
+        (glove,) = fake_sdk.connected.values()
+        for seq in range(3):
+            for topic in ("tactile", "tactile_point_cloud"):
+                glove.callbacks[topic](_glove_frame(topic, rng, seq))
+        win.end_block(completed=False)
+        win.close()
+    (rec,) = [json.loads(line) for line in (tmp_path / "s" / "trials.jsonl").open()]
+    assert rec["metadata"]["task"] == "text_prompter"
+    meta = rec["sources"]["wuji_glove"]
+    assert meta["ok"] is True
+    assert {k: v["n_frames"] for k, v in meta["streams"].items()} == {
+        "A_tactile": 3, "A_tactile_point_cloud": 3}  # fmt: skip
+    data = np.load(rec["npz_path"])
+    assert data["wuji_glove_A_tactile_data"].shape == (3, 5)
+    assert data["wuji_glove_A_tactile_point_cloud_pressure"].shape == (
+        3, wuji_recorder.CLOUD_POINTS)  # fmt: skip
+    assert data["wuji_glove_A_tactile_seq"].tolist() == [0, 1, 2]
+    assert "text_go_host_ns" in data.files  # the block's own arrays are there too
