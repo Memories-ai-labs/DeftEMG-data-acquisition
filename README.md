@@ -517,7 +517,8 @@ The seed is printed and saved in every block and in `plan.json`; `--seed` makes 
   tasks shuffled (a task's steps stay together).
 - Blocks are placed whole into sessions `S01/`, `S02/`, ..., each estimated to fit the session
   limit. Files are named `bNN_<object or group>.json` in run order. `plan.json` lists each
-  session's blocks, trial counts and estimate.
+  session's blocks, trial counts and estimate. `session_objects.txt` lists the objects each
+  session needs, the grasp calibration's (hardcover book and ball by default) included.
 - A block's estimate is the object swap plus, per prompt, countdown + task estimate + reset.
   A session's room is the limit less setup and grasp calibrations. The catalogue's `[timing]`
   sets these, and `--countdown-s`, `--reset-s`, `--object-swap-s`, `--session-setup-s`,

@@ -9,7 +9,9 @@ object, one natural block per group (paired steps, such as loosen then tighten, 
 and in order). Blocks are split into session folders (``S01/``, ``S02/``, ...), each estimated
 to fit the session limit, with files named ``bNN_<object or group>.json`` in run order; run a
 session with ``pixi run prompter protocols/G01/S01``. ``plan.json`` records the seed, the timing
-assumptions and every session's blocks and estimate. Timing assumptions come from the
+assumptions and every session's blocks and estimate; ``session_objects.txt`` lists the objects
+each session needs, the grasp calibration's included (what the start screens say to set
+out). Timing assumptions come from the
 catalogue's ``[timing]`` table; the options below override them. ``--summary`` prints the
 counts and session estimates without writing anything. Lane (finger-press) blocks come from
 ``make-sequences``; the README's "Grasp and natural-task blocks" covers the catalogue format.
@@ -40,6 +42,7 @@ from deftemg_acquisition.tasks.catalogue import (
     load_catalogue,
     natural_units,
 )
+from deftemg_acquisition.tasks.textblock import grasp_calibration_block
 from deftemg_acquisition.tasks.textgen import (
     TaskSet,
     block_estimate_s,
@@ -48,6 +51,7 @@ from deftemg_acquisition.tasks.textgen import (
 )
 
 PLAN = "plan.json"
+OBJECTS = "session_objects.txt"
 SESSION_DIR = re.compile(r"S\d\d")
 LISTED_FILE = re.compile(r"S\d\d/[A-Za-z0-9_-]+\.json")
 
@@ -124,11 +128,27 @@ def check_old_set(out: Path, force: bool) -> list[Path]:
     return old
 
 
-def write_set(out: Path, ts: TaskSet, plan: dict, old: list[Path]) -> None:
+def session_objects(ts: TaskSet, calibration: list[str]) -> str:
+    """The objects each session needs, for ``session_objects.txt``: the grasp calibration's
+    (``calibration``, its start screen's items) in sessions that have calibrations, then each
+    block's start-screen items in run order, each object once."""
+    lines = [
+        f"Objects for each session (seed {ts.seed}). Calibration objects are used at the start",
+        "and again at each recalibration.",
+    ]
+    for s in ts.sessions:
+        cal = calibration if s.calibrations else []
+        items = dict.fromkeys([*cal, *(i for b in s.blocks for i in b.params["start"]["set_out"])])
+        lines += ["", f"{s.name} (est {s.est_s / 60:.1f} min)"]
+        lines += [f"  {i}{'  (calibration)' if i in cal else ''}" for i in items]
+    return "\n".join(lines) + "\n"
+
+
+def write_set(out: Path, ts: TaskSet, plan: dict, old: list[Path], objects: str) -> None:
     """Write the set into ``out``: first all of it into a staging folder in ``out`` (a failed
     write leaves the old set as it was), then move the files into place, delete the old set's
     files that the new set did not replace, and its session folders left empty, and last move
-    ``plan.json`` into place."""
+    ``session_objects.txt`` (``objects``) and ``plan.json`` into place."""
     out.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=".staging-", dir=out))
     try:
@@ -136,6 +156,7 @@ def write_set(out: Path, ts: TaskSet, plan: dict, old: list[Path]) -> None:
             for b in s.blocks:
                 b.save(stage / s.name / block_file(b))
         (stage / PLAN).write_text(json.dumps(plan, indent=2))
+        (stage / OBJECTS).write_text(objects)
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
@@ -149,6 +170,7 @@ def write_set(out: Path, ts: TaskSet, plan: dict, old: list[Path]) -> None:
     for d in {path.parent for path in old}:
         if not any(d.iterdir()):
             d.rmdir()
+    os.replace(stage / OBJECTS, out / OBJECTS)
     os.replace(stage / PLAN, out / PLAN)
     shutil.rmtree(stage)
 
@@ -276,8 +298,9 @@ def main(argv: list[str] | None = None) -> None:
         print_sessions(ts, plan)
         return
     old = check_old_set(args.out, args.force)
-    write_set(args.out, ts, plan, old)
-    print(f"wrote {len(plan['files'])} blocks and {PLAN} to {args.out}")
+    calibration = grasp_calibration_block(cat.calibration).params["start"]["set_out"]
+    write_set(args.out, ts, plan, old, session_objects(ts, calibration))
+    print(f"wrote {len(plan['files'])} blocks, {PLAN} and {OBJECTS} to {args.out}")
     print_sessions(ts, plan)
 
 

@@ -328,6 +328,24 @@ def test_command_writes_sessions_and_plan(tmp_path, ts):
     assert Path(plan["sessions"][0]["blocks"][0]["file"]).name.startswith("b01_")
 
 
+def test_session_objects_list_calibration_and_block_objects(tmp_path, ts):
+    out = tmp_path / "G01"
+    _run("--out", out, "--seed", 7)
+    text = (out / "session_objects.txt").read_text()
+    assert "seed 7" in text
+    sessions = text.split("\n\n")[1:]
+    assert len(sessions) == len(ts.sessions)
+    for chunk, s in zip(sessions, ts.sessions, strict=True):
+        head, *items = chunk.strip().splitlines()
+        assert head.startswith(f"{s.name} (est ")
+        assert items[:2] == ["  Hardcover book  (calibration)", "  Ball  (calibration)"]
+        names = [i.strip() for i in items[2:]]
+        wanted = dict.fromkeys(i for b in s.blocks for i in b.params["start"]["set_out"])
+        assert names == list(wanted)  # every block's objects, each once, in run order
+    _run("--out", out, "--seed", 8, "--force")  # replaced with the set
+    assert "seed 8" in (out / "session_objects.txt").read_text()
+
+
 def test_guard_refuses_without_force_and_force_removes_only_listed_files(tmp_path):
     out = tmp_path / "G01"
     _run("--out", out, "--seed", 1)
