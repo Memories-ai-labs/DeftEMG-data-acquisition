@@ -5,9 +5,21 @@ Keys (the window must have focus):
     Enter        end the running block early (saved, marked incomplete; the block stays current)
     Left/Right   choose the previous/next block while idle
     Esc          quit (ends a running block first)
+    Space, r     text blocks only: see below
 The letters s / e / q do the same as Shift / Enter / Esc.
 
 A block ends by itself ``tail_s`` after its last prompt and the next block becomes current.
+
+Text blocks (``textblock.TextBlock``, run by ``selfpaced.SelfPacedRunner``) are drawn in the
+prompter's text mode and saved with ``task="text_prompter"`` and ``text_*`` arrays (no
+``prompt_*`` arrays, ``scroll_start_host_ns`` or effort trace). In a self-paced block, Space
+starts each prompt's countdown (``countdown_s``) and marks its end, and ``r`` redoes the last
+prompt; after the last end, Space (or Enter or Esc, which then save the block as complete; Esc
+also quits) finishes the block ``tail_s`` later. Closing the window then saves it as complete
+at once, with no tail (Esc waits ``tail_s`` first). Enter before that ends the block early, as
+for a lane block. A timed text block (the grasp calibration) runs from its schedule and ends by
+itself ``tail_s`` after its last prompt. Markers: ``text|preview|i``, ``text|countdown|i``,
+``text|go|i|<label>``, ``text|end|i``; the sync patch flashes at each Go.
 
 Recalibration (``recalibrate_s``, e.g. [600, 1200]): once a calibration block has been done, the
 next one is due ``recalibrate_s[0]`` s after it started, later ones every ``recalibrate_s[-1]``
@@ -47,6 +59,7 @@ from deftemg_acquisition.clock import host_ns
 
 from .effort import ZONES, EffortMeter, prompt_level, reference_from_trial
 from .prompter import DEFAULT_LOOKAHEAD_S, PrompterWidget
+from .selfpaced import GO_DEBOUNCE_S, IDLE, SelfPacedRunner, TextView
 from .sequence import (
     CALIBRATION,
     CALIBRATION_REPS,
@@ -54,6 +67,7 @@ from .sequence import (
     active_label,
     calibration_for,
 )
+from .textblock import COUNTDOWN_S, TASK, TIMED, TextBlock
 
 log = logging.getLogger(__name__)
 
@@ -107,7 +121,7 @@ class TaskWindow(QtWidgets.QMainWindow):
     def __init__(
         self,
         session: AcquisitionSession,
-        sequences: list[tuple[Path, Sequence]],
+        sequences: list[tuple[Path, Sequence | TextBlock]],
         hand: str = "right",
         lookahead_s: float = DEFAULT_LOOKAHEAD_S,
         tail_s: float = 1.5,
@@ -117,6 +131,8 @@ class TaskWindow(QtWidgets.QMainWindow):
         effort_meter: bool = False,
         effort_zones: dict[str, tuple[float, float]] | None = None,
         plugins: list[TaskPlugin] | tuple[TaskPlugin, ...] = (),
+        countdown_s: float = COUNTDOWN_S,
+        go_debounce_s: float = GO_DEBOUNCE_S,
     ):
         super().__init__()
         if not sequences:
@@ -139,6 +155,13 @@ class TaskWindow(QtWidgets.QMainWindow):
         self._n_calibrations = 0
         self._due_note = ""
         self._source_note = ""  # the sources that failed in the last block
+        # Text blocks: the countdown before Go, Space's debounce, and the running block
+        self.countdown_s = countdown_s
+        self.go_debounce_s = go_debounce_s
+        self._host_ns = host_ns  # the text runner's clock (int ns); replaceable in tests
+        self._runner: SelfPacedRunner | None = None
+        self._finish_at_ns: int | None = None  # a finished text block is saved at this time
+        self._close_after = False  # Esc finished a text block: quit once it is saved
 
         self.setWindowTitle("Finger-press prompter")
         self.sync_patch = sync_patch
@@ -177,7 +200,7 @@ class TaskWindow(QtWidgets.QMainWindow):
         return self._t0_perf is not None
 
     @property
-    def sequence(self) -> Sequence:
+    def sequence(self) -> Sequence | TextBlock:
         return self.sequences[self.current][1]
 
     @property
@@ -214,6 +237,7 @@ class TaskWindow(QtWidgets.QMainWindow):
 
     def _show_idle(self) -> None:
         self.prompter.sequence = self.sequence
+        self.prompter.text_view = None  # never left over from a text block
         self.prompter.effort = None
         self.prompter.end_run()
         n = len(self.sequences)
@@ -226,11 +250,13 @@ class TaskWindow(QtWidgets.QMainWindow):
         else:
             again = "  (already done)" if self.current in self.completed else ""
             how = self.sequence.params.get("instructions")
+            what = (self._text_summary() if isinstance(self.sequence, TextBlock) else
+                    f"{len(self.sequence.prompts)} presses, "
+                    f"{self.sequence.duration_s + self.tail_s:.0f} s\n")  # fmt: skip
             self.prompter.message = (
                 self._source_note
                 + self._due_note
-                + f"{self.sequence.name}{again}\n{len(self.sequence.prompts)} presses, "
-                f"{self.sequence.duration_s + self.tail_s:.0f} s\n"
+                + f"{self.sequence.name}{again}\n{what}"
                 + (f"\n{how}\n" if how else "")
                 + self._effort_note()
                 + "".join(t for t in self._plugins("instructions", self.sequence) if t)
@@ -238,7 +264,21 @@ class TaskWindow(QtWidgets.QMainWindow):
             )
         self.prompter.update()
 
+    def _text_summary(self) -> str:
+        """The idle screen's lines for a text block: the object to place, the prompts and the
+        estimated length."""
+        block = self.sequence
+        place = block.params.get("object_name")
+        n = len(block.prompts)
+        if block.mode == TIMED:
+            length = f"{n} grasps, {block.duration_s + self.tail_s:.0f} s"
+        else:
+            length = f"{n} prompts, about {max(1, round(block.estimate_s() / 60))} min"
+        return (f"Place: {place}\n" if place else "") + length + "\n"
+
     def _effort_note(self) -> str:
+        if isinstance(self.sequence, TextBlock):  # no effort bar on text blocks
+            return ""
         if not self.prompter.show_effort or self.sequence.task_set == CALIBRATION:
             return ""
         if self.effort_meter.reference is None:
@@ -267,6 +307,8 @@ class TaskWindow(QtWidgets.QMainWindow):
         """Put a calibration block in front of the current block if one is due."""
         if self.running or self.sequence.task_set == CALIBRATION:
             return False
+        if isinstance(self.sequence, TextBlock):  # no lane calibration before a text block
+            return False
         since_min = self._calibration_due()
         if since_min is None:
             return False
@@ -288,11 +330,15 @@ class TaskWindow(QtWidgets.QMainWindow):
         self._due_note = ""
         self._block_start = self._now()
         path, seq = self.sequences[self.current]
+        text = isinstance(seq, TextBlock)
         extra = {}
-        if self.prompter.show_effort and seq.task_set != CALIBRATION:  # off after a failure
-            extra["effort_meter"] = self._effort_settings()
+        if self.prompter.show_effort and not text and seq.task_set != CALIBRATION:
+            extra["effort_meter"] = self._effort_settings()  # (off after a failure)
         self._plugins("block_started", seq, extra)
         self._effort_log = []
+        if text:
+            self._start_text_block(path, seq, extra)
+            return
         self.session.start_trial(
             label=seq.name,
             task="scroll_prompter",
@@ -314,12 +360,58 @@ class TaskWindow(QtWidgets.QMainWindow):
         self._timer.start()
         self._tick()
 
+    def _start_text_block(self, path: Path, block: TextBlock, extra: dict) -> None:
+        self.session.start_trial(
+            label=block.name,
+            task=TASK,
+            task_set=block.task_set,
+            mode=block.mode,
+            sequence_file=str(path),
+            sequence=block.to_dict(),
+            hand=self.hand,
+            tail_s=self.tail_s,
+            countdown_s=self.countdown_s,
+            go_debounce_s=self.go_debounce_s,
+            sync_patch=self.sync_patch,
+            **extra,
+        )
+        self._runner = SelfPacedRunner(block, self.countdown_s, self.go_debounce_s,
+                                       host_ns=self._host_ns)  # fmt: skip
+        self._t0_ns = self._runner.start_ns  # block_start_host_ns
+        self._finish_at_ns = None
+        self._close_after = False
+        self._t0_perf = time.perf_counter()
+        self.prompter.text_view = self._runner.view()
+        self.prompter.begin_run(self._t0_perf)
+        self.prompter.message = ""
+        self.prompter.header = f"Block {self.current + 1}/{len(self.sequences)}: {block.name}"
+        self._timer.start()
+        self._tick()
+
+    def _text_arrays(self) -> tuple[dict, bool]:
+        """The running text block's arrays, and whether it is complete (its runner decides:
+        ended early, or finished)."""
+        completed = self._runner.end_block()  # stops an attempt under way; no-op once finished
+        for marker in self._runner.markers():  # its end, and any event since the last tick
+            self.session.push_marker(marker)
+        arrays = self._runner.arrays(self.prompter.go_paint_ns)
+        if self.sync_patch:
+            arrays["sync_flash_paint_ns"] = np.array(self.prompter.flash_paint_ns, np.int64)
+        self._runner = None
+        self._finish_at_ns = None
+        return arrays, completed
+
     def end_block(self, completed: bool) -> None:
+        """Save the running block (``completed``: it ran to its end). A text block's runner
+        decides instead: complete once finished, else ended early."""
         if not self.running:
             return
         self._timer.stop()
         elapsed = time.perf_counter() - self._t0_perf
         self._t0_perf = None
+        if self._runner is not None:
+            self._end_text_block(elapsed)
+            return
         arrays = self.sequence.prompt_arrays()
         arrays["scroll_start_host_ns"] = np.int64(self._t0_ns)
         # When each prompt was actually drawn reaching the target / gone (-1: never drawn,
@@ -348,6 +440,21 @@ class TaskWindow(QtWidgets.QMainWindow):
             scroll_start_host_ns=self._t0_ns,
             elapsed_s=round(elapsed, 3),
         )
+        self._after_block(result, seq, completed)
+
+    def _end_text_block(self, elapsed: float) -> None:
+        arrays, completed = self._text_arrays()
+        block = self.sequence
+        self._plugins("block_ending", block, arrays)
+        result = self.session.end_trial(arrays=arrays, completed=completed,
+                                        elapsed_s=round(elapsed, 3))  # fmt: skip
+        self._after_block(result, block, completed)
+        if self._close_after:
+            self._close_after = False
+            self.close()
+
+    def _after_block(self, result, seq: Sequence | TextBlock, completed: bool) -> None:
+        """A block has been saved: note failed sources, move on, show the idle screen."""
         self._source_note = source_note(result.sources)
         self._plugins("block_ended", seq, completed)
         if completed:
@@ -393,6 +500,10 @@ class TaskWindow(QtWidgets.QMainWindow):
                                  np.nan if top is None else top, code))  # fmt: skip
 
     def _tick(self) -> None:
+        if self._runner is not None:
+            self._plugins("tick", (self._host_ns() - self._t0_ns) / 1e9)
+            self._text_step()
+            return
         t = time.perf_counter() - self._t0_perf
         if self.prompter.show_effort and self.sequence.task_set != CALIBRATION:
             try:
@@ -407,6 +518,48 @@ class TaskWindow(QtWidgets.QMainWindow):
         if t > self.sequence.duration_s + self.tail_s:
             self.end_block(completed=True)
 
+    def _text_step(self) -> None:
+        """Advance the running text block: apply its due events, show it, send its markers, and
+        save it ``tail_s`` after it finished (a timed block: after its last prompt's end)."""
+        runner = self._runner
+        runner.update()
+        now = self._host_ns()
+        if runner.finished and runner.completed and self._finish_at_ns is None:
+            if runner.block.mode == TIMED:  # from the scheduled end, as lane blocks do
+                end = runner.start_ns + round(runner.block.duration_s * 1e9)
+            else:
+                end = now
+            self._finish_at_ns = end + round(self.tail_s * 1e9)
+        # A finished block shows nothing while its tail is recorded
+        self.prompter.text_view = TextView(IDLE) if runner.finished else runner.view()
+        for marker in runner.markers():
+            self.session.push_marker(marker)
+        self.prompter.update()
+        if self._finish_at_ns is not None and now >= self._finish_at_ns:
+            self.end_block(completed=True)
+
+    def _text_key(self, key) -> bool:
+        """Space, r, Enter and Esc while a text block runs; returns whether it was handled."""
+        Qt = QtCore.Qt
+        runner = self._runner
+        if key == Qt.Key_Space:
+            runner.space()
+        elif key == Qt.Key_R:
+            runner.redo()
+        elif key in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_E, Qt.Key_Escape, Qt.Key_Q):
+            quit_ = key in (Qt.Key_Escape, Qt.Key_Q)
+            if not runner.end_block():  # ended early: saved now (Esc: and quit)
+                if quit_:
+                    self.close()
+                else:
+                    self.end_block(completed=False)
+                return True
+            self._close_after |= quit_  # after the last end: saved complete after the tail
+        else:
+            return False
+        self._text_step()
+        return True
+
     def _send_prompt_markers(self, t: float) -> None:
         label = active_label(self.sequence, t)
         if label != self._last_label:
@@ -419,6 +572,8 @@ class TaskWindow(QtWidgets.QMainWindow):
         key = event.key()
         Qt = QtCore.Qt
         if event.isAutoRepeat():
+            return
+        if self._runner is not None and self._text_key(key):
             return
         if key in (Qt.Key_Shift, Qt.Key_S):
             self.start_block()
@@ -435,6 +590,7 @@ class TaskWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event) -> None:
         self._source_timer.stop()
+        self._close_after = False  # closing already
         self.end_block(completed=False)
         if self.effort_meter is not None:
             self.session.device.detach_sink("effort")
