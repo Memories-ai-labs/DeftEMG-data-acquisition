@@ -68,20 +68,33 @@ def test_demo_task_blocks_are_their_catalogue_generated(tmp_path, capsys):
 
 def test_demo_task_blocks_show_the_new_screens():
     """The demo blocks carry what the prompter's screens need: the bold lead, the start screen's
-    lines and the terms slide."""
+    lines and the terms slide; the mug is held as in the shipped catalogue."""
     blocks = {p.stem: load_block(p) for p in sorted(DEMO_TASKS.glob("S01/*.json"))}
     mug = blocks["b02_mug"]
     assert mug.params["start"] == {
         "set_out": ["Coffee mug"],
         "task": "grasp as prompted, the hand shows which fingers",
     }
-    for p in mug.prompts:
-        assert p.bold_line == 2 and p.text.split("\n")[2] == "STAY ON TABLE", p
+    lines = [p.text.split("\n") for p in mug.prompts]
+    assert all(p.bold_line == 2 for p in mug.prompts)
+    # the lip only from the top, the body only from the side
+    assert sorted({(w[0], w[1]) for w in lines}) == [
+        ("Coffee mug, from the side", "Power grasp, around the body"),
+        ("Coffee mug, from the top", "Thumb-index grasp, on the lip"),
+    ]
+    # light and pick up on each (squeeze and rotate excluded: the mug may be filled)
+    assert len(lines) == 4
+    assert sorted(w[2] for w in lines) == ["PICK UP"] * 2 + ["STAY ON TABLE"] * 2
+    assert not any(w[3].startswith("Pick up, rotate") for w in lines)
+    # the rotate variation, with its PICK UP lead, once per grasp type on the tennis ball
+    ball = [p.text.split("\n") for p in blocks["b01_tennis_ball"].prompts]
+    rotate = [w for w in ball if w[3].startswith("Pick up, rotate")]
+    assert len(rotate) == 2 and all(w[2] == "PICK UP" for w in rotate)
     assert blocks["b03_jar_and_pages"].params["start"] == {
         "set_out": ["Jar", "Book"],
         "task": "do each task as written",
     }
     terms = [t["term"] for t in mug.params["terms"]]
-    assert terms[:3] == ["Light grasp", "Grasp and squeeze", "Stay on table"]
+    assert terms[:5] == ["Light grasp", "Grasp and squeeze", "Stay on table", "Pick up", "Rotate"]
     assert all(b.params["terms"] == mug.params["terms"] for b in blocks.values())
     assert all(p.bold_line is None for p in blocks["b03_jar_and_pages"].prompts)

@@ -2,7 +2,7 @@
   "seed": 1,
   "catalogue": "demo_tasks",
   "catalogue_path": "protocols/demo_tasks/catalogue.toml",
-  "catalogue_sha256": "db55d29d7e472471dd9fbb8fc4d0fd67ce92aeb8d81a3615024bb32f64236132",
+  "catalogue_sha256": "14790640978c48b98209b4cbb46fd6a91e7c4aae791addc581610e401c72c671",
   "timing": {
     "countdown_s": 3.0,
     "reset_s": 5.0,
@@ -17,30 +17,30 @@
   },
   "capacity_s": 1440.0,
   "counts": {
-    "grasp": 8,
+    "grasp": 12,
     "natural": 3
   },
   "sessions": [
     {
       "session": "S01",
-      "est_s": 555.0,
+      "est_s": 635.0,
       "calibrations": 1,
-      "grasp_trials": 8,
+      "grasp_trials": 12,
       "natural_trials": 3,
       "blocks": [
         {
           "file": "S01/b01_tennis_ball.json",
           "name": "S01_b01_tennis_ball",
           "task_set": "grasp",
-          "trials": 4,
-          "est_s": 97.0
+          "trials": 8,
+          "est_s": 169.0
         },
         {
           "file": "S01/b02_mug.json",
           "name": "S01_b02_mug",
           "task_set": "grasp",
           "trials": 4,
-          "est_s": 93.0
+          "est_s": 101.0
         },
         {
           "file": "S01/b03_jar_and_pages.json",

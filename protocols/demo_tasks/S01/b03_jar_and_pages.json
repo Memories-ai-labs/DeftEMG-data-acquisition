@@ -7,7 +7,7 @@
   "params": {
     "seed": 1,
     "catalogue": "demo_tasks",
-    "catalogue_sha256": "db55d29d7e472471dd9fbb8fc4d0fd67ce92aeb8d81a3615024bb32f64236132",
+    "catalogue_sha256": "14790640978c48b98209b4cbb46fd6a91e7c4aae791addc581610e401c72c671",
     "timing": {
       "countdown_s": 3.0,
       "reset_s": 5.0,
@@ -34,6 +34,14 @@
         "text": "the object stays on the table the whole time"
       },
       {
+        "term": "Pick up",
+        "text": "lift the object off the table"
+      },
+      {
+        "term": "Rotate",
+        "text": "turn the object in all directions in the air, slowly or quickly, then put it back"
+      },
+      {
         "term": "Brief maximum",
         "text": "grasp as hard as is comfortable, for the prompt duration"
       },
@@ -55,20 +63,6 @@
     "plan_est_s": 95.0
   },
   "prompts": [
-    {
-      "text": "Open the book, then turn pages until the time is up",
-      "object": "pages",
-      "grasp": null,
-      "approach": null,
-      "variation": null,
-      "step": null,
-      "group": "jar_and_pages",
-      "highlight": [],
-      "duration_s": 10.0,
-      "onset_s": null,
-      "est_s": 10.0,
-      "bold_line": null
-    },
     {
       "text": "Open the turn-lid of the jar",
       "object": "jar",
@@ -95,6 +89,20 @@
       "duration_s": null,
       "onset_s": null,
       "est_s": 8.0,
+      "bold_line": null
+    },
+    {
+      "text": "Open the book, then turn pages until the time is up",
+      "object": "pages",
+      "grasp": null,
+      "approach": null,
+      "variation": null,
+      "step": null,
+      "group": "jar_and_pages",
+      "highlight": [],
+      "duration_s": 10.0,
+      "onset_s": null,
+      "est_s": 10.0,
       "bold_line": null
     }
   ]

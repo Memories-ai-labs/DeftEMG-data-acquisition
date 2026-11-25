@@ -328,17 +328,20 @@ it comes before:
 - A session's first calibration matches its first task block, and a later one the block it is
   put in front of.
 - **Before text blocks** (grasp and natural tasks): a grasp calibration, saved with `task_set:
-  grasp_calibration`. It runs like the other text blocks: the screen previews each grasp,
-  highlighted on the hand, and Space starts its countdown. One brief maximum grasp (1.5 s,
-  ending by itself) of each kind: thumb-index, thumb-index-middle and all fingertips on a
-  hardcover book, then a power grasp on a ball (swap objects while it is previewed). After the
-  last one, Space finishes the block, and `r` redoes a grasp. A catalogue's `[calibration]`
-  table changes the hold time, grasps and objects.
+  grasp_calibration`. Its start screen says what to set out (a hardcover book and a ball). It
+  runs like the other text blocks, paced by the operator: the screen previews each grasp,
+  highlighted on the hand, Space starts its 3 s countdown, and at Go the subject makes one
+  brief maximum grasp, which ends by itself after 1.5 s (a Space from 1 s after Go ends it
+  sooner). One of each kind: thumb-index, thumb-index-middle and all fingertips on the book,
+  then a power grasp on the ball (swap objects while it is previewed). After the last one,
+  Space finishes the block, and `r` redoes a grasp. A catalogue's `[calibration]` table
+  changes the hold time (`hold_s`), grasps and objects.
 
 The two kinds keep separate schedules: the prompter puts a calibration before the session's
 first lane block and a grasp calibration before its first text block, and the 10 / 20 minute
 rule runs for each kind on its own (a press calibration never counts for text blocks, nor the
-reverse). `--no-calibration` skips both.
+reverse). A press calibration's clock starts when it starts; a grasp calibration's at its first
+Go, since it may wait at its first preview. `--no-calibration` skips both.
 
 `deftemg_acquisition.data.calibration` turns a press, pinch or squeeze block (not a grasp
 calibration) into:
@@ -405,6 +408,7 @@ Blocks run in the order given. Keys (the prompter window must have focus; click 
 | Shift (or `s`) | Start the current block. It ends by itself 1.5 s after the last prompt and the next block becomes current |
 | Space | Text blocks: start the prompt's countdown, mark its end; after the last one, finish the block |
 | `r` | Text blocks: redo the latest prompt (in a countdown: cancel it) |
+| `T` | Text blocks, between blocks: show the terms slide again (Shift, Space or Enter closes it) |
 | Enter (or `e`) | End the block early: saved, marked incomplete, block stays current to redo (a text block resumes) |
 | ← / → | Choose a block (between blocks) |
 | Esc (or `q`) | Quit |
@@ -459,9 +463,9 @@ note), and a grasp calibration doesn't set its 100 %.
 ### Grasp and natural-task blocks
 
 Text-prompt blocks show a written task instead of scrolling capsules: an object, how to
-approach it, a grasp and what to do ("Tuna can, from the top / Thumb-index grasp / Light
-grasp"), or an everyday task ("Loosen the wing nut all the way off"). The operator paces
-them: each prompt waits for Space.
+approach it, a grasp and what to do ("Tuna can, from the top / Thumb-index grasp / **STAY ON
+TABLE** / Light grasp"), or an everyday task ("Loosen the wing nut all the way off"). The
+operator paces them: each prompt waits for Space.
 
 ```bash
 pixi run make-task-sequences --summary            # check the catalogue, print the estimates
@@ -473,20 +477,34 @@ pixi run prompter --simulate --condition mug_fill=empty protocols/demo_tasks/S01
 **The catalogue** (`protocols/grasp_natural/catalogue.toml`; TOML, comments in the file
 describe every key) holds:
 - **Grasp types** (the fingertips highlighted on the hand, or the whole hand), **variations**
-  (light grasp, grasp and squeeze, pick up and place, ...; each with an estimated time),
-  **approaches** and session **conditions**.
+  (light grasp, grasp and squeeze, pick up and place, pick up and rotate slowly or quickly,
+  ...; each with an estimated time), **approaches** and session **conditions**.
+  - A variation's `lead` is a line drawn in bold between the grasp line and its text: "STAY ON
+    TABLE" for the light grasp and the squeeze, "PICK UP" for the others.
+  - `first_approach_only = true` (the two rotate variations) keeps the variation, per grasp
+    type, only on the first of the object's approaches that offers that grasp type, so an
+    object is rotated once per grasp type.
 - **Objects:** each takes every grasp type and variation, with one unnamed approach, unless it
   names its `approaches`, limits the grasps (`grasps`, `exclude_grasps`, per approach
   `approach_grasps`), drops variations (`exclude_variations`) or adds notes (`note`,
-  `notes.<grasp>`). The shipped file has 19 objects and 456 combinations.
+  `notes.<grasp>`). The shipped file has 19 objects and 590 combinations. For example, the
+  mugs take thumb-index and thumb-index-middle from the top, on the lip, and all fingertips
+  and power from the side, around the body; the hammer and the potato chip are not rotated.
 - **Natural tasks:** a text, or steps (loosen, then tighten) repeated for each variant
   (`{variant}` in the text; a variant can reword a step). A variant's steps always run together
   and in order. `group` decides which block a task joins, and `fixed_s` gives a task a fixed
-  duration (page turning). The shipped file has 31 trials in 5 groups.
+  duration (page turning). Each task must list in `items` what to set out for it, as the
+  subject sees it (the block's start screen lists them). The shipped file has 31 trials in 5 groups.
+- **Terms** (`[[terms]]`, optional): each a term and what it means ("Pick up: lift the object
+  off the table"), shown to the subject before the first block, in this order.
+- **Grasp calibration** (`[calibration]`, optional): the hold time and the maxima, overriding
+  the defaults (see [Calibration block](#calibration-block)).
 
 To add an object or a task, add an `[[objects]]` or `[[natural]]` entry and make a new set;
 `--summary` checks the file (an error names the entry) and prints the counts. A block file
-holds its prompts' text, so editing the catalogue doesn't change a set already made.
+holds its prompts' text, so editing the catalogue doesn't change a set already made. But after
+a change that adds, removes or re-times combinations, the same seed gives other blocks, so
+regenerate a set in use as a whole; never mix blocks of two sets.
 
 **Sets and sessions.** `make-task-sequences` puts every combination in a set once, shuffled.
 The seed is printed and saved in every block and in `plan.json`; `--seed` makes the same set again.
@@ -499,18 +517,29 @@ The seed is printed and saved in every block and in `plan.json`; `--seed` makes 
   A session's room is the limit less setup and grasp calibrations. The catalogue's `[timing]`
   sets these, and `--countdown-s`, `--reset-s`, `--object-swap-s`, `--session-setup-s`,
   `--calibration-s` and `--session-limit-s` override it. Defaults: countdown 3 s, reset 5 s,
-  swap 45 s, setup 180 s, calibration 90 s, limit 30 min; variations 4, 6, 8 and 9 s. With
-  these the shipped catalogue takes about 3.1 h in 7 sessions. They are estimates: tune them
+  swap 45 s, setup 180 s, calibration 90 s, limit 30 min; variations 4, 6, 8 and 9 s, and
+  12 and 8 s for rotating slowly and quickly. With these the shipped catalogue's 590 grasp
+  prompts and 31 natural trials take about 4 h in 9 sessions. They are estimates: tune them
   after a real session.
 - It refuses to write over a set already in `--out`, since a new seed gives other blocks.
   `--force` replaces it and deletes only the files the old `plan.json` lists.
 
 **Running.** The prompter takes text blocks like lane blocks: a folder runs its blocks in name
 order (skipping `plan.json`), and lane and text blocks can be mixed. The screen shows the
-block, the prompt number and the session conditions, then the prompt's text and the hand
-with the grasp highlighted (fingertips, or the whole hand for a power grasp). Between blocks it
-says which object to place.
-1. Shift starts the block on a preview of the first prompt: "Rest. Next:", the prompt dimmed.
+block, the prompt number and the session conditions, then the prompt's text (its `lead` line
+in bold) and the hand with the grasp highlighted (fingertips, or the whole hand for a power
+grasp).
+- **Terms:** when the window opens, a slide lists the catalogue's terms (a run of blocks
+  without them skips it). Shift, Space or Enter closes it, without starting a block; `T`
+  between blocks shows it again.
+- **Start screen:** between blocks, one item per line (several objects listed under "Set
+  out:"): the block's name, "Set out:" with the objects to put out, "Task:" with what to do,
+  the number of prompts and the estimated minutes (or where it resumes), the session
+  conditions, and "Shift to start". Block files made before these screens show the object to
+  place and a paragraph of instructions instead.
+
+1. Shift starts the block on a preview of the first prompt: "Rest. Next:", the prompt dimmed,
+   and "Space to start" (with "r: redo the last prompt" when the prompt before can be redone).
 2. Space starts a 3 s countdown, then "GO": the subject does the task and returns to rest.
 3. Space marks the end, and the next prompt is previewed. A fixed-duration task ends by
    itself (Space ends it sooner). Space is ignored during a countdown, and for 1 s after Go and
@@ -622,8 +651,9 @@ pixi run replay data/raw/<session>/trial_001_<label>.npz --speed 0.5 --window 10
 One timeline, played back together:
 - **Prompter:** as the subject saw it (prompter trials only), with the effort bar for blocks
   recorded with `--effort-meter`. A text-prompt block is redrawn in text mode from its
-  recorded times. The finish isn't saved, so during the block's last 1.5 s of recording
-  (`tail_s`), replay still shows "Space to finish the block", where the live screen was idle.
+  recorded times, idle from its saved finish (`text_finish_host_ns`). Files from before the
+  finish was saved show "Space to finish the block" during the block's last 1.5 s of recording
+  (`tail_s`), where the live screen was idle.
 - **EMG view:** traces, spectrum and IMU exactly as in the live viewer.
   - Replay opens at the start of the trial and plays, with new data entering at the right
     edge (`--paused` opens it paused).
@@ -780,7 +810,11 @@ Key arrays in the trial `.npz`:
   - `text_end_reason` (`operator`, `timer`, `block_end`), `text_status` (`ok`, `redo`,
     `cancelled`, `incomplete`).
   - The prompt's fields: `text_object`, `text_grasp`, `text_approach`, `text_variation`,
-    `text_step`, `text_text` ("" = none). Scalar `block_start_host_ns`.
+    `text_step`, `text_text` ("" = none; the whole prompt, its bold `lead` line included, whose
+    index is the prompt's `bold_line` in the `sequence` metadata).
+  - Scalars `block_start_host_ns` and `text_finish_host_ns`: when the block finished (Space or
+    Enter after its last end, or an early end; −1 = not finished, or a file from before it was
+    saved).
   - No `prompt_*` arrays, `scroll_start_host_ns` or effort trace. The grasp calibration saves
     the same arrays. Calibrations recorded before it became operator-started are `timed`: their
     times follow its schedule, and they replay but no longer run.
