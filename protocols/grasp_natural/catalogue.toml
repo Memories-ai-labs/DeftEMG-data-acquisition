@@ -1,0 +1,323 @@
+# Catalogue of grasp and natural-task text prompts (read by deftemg_acquisition.tasks.catalogue).
+#
+# Add an object or a task by editing this file; no code changes are needed.
+#
+# Grasp blocks: one block per object. Each prompt names the object, an approach, a grasp type
+# and a task variation; every allowed combination appears once per set. An object takes every
+# grasp type and every variation, with one unnamed approach, unless it says otherwise:
+#   approaches          approach ids from [approaches], one prompt set per approach
+#   grasps              only these grasp types
+#   exclude_grasps      every grasp type but these
+#   approach_grasps     per approach, only these grasp types (other approaches: as above)
+#   exclude_variations  every variation but these
+#   note                shown with every prompt of the object
+#   notes.<grasp>       shown with that grasp type's prompts
+#   condition           a session condition from [conditions], asked at the session start and
+#                       saved with the object's blocks
+#
+# Natural blocks: one block per group. A task is one or more steps; a task with variants is
+# repeated for each variant ("{variant}" in a text is the variant's name, and a variant can
+# give a step its own wording with text.<step>, or with text = "..." for a one-step task).
+# Variants must differ in their prompt text, so the subject sees which one is meant. One
+# variant's steps always run one after the other, in the order listed (e.g. loosen, then
+# tighten the same fastener). est_s is the estimated time of one step; fixed_s makes a step
+# run for a fixed time (and is its estimate when est_s is not given).
+
+[catalogue]
+name = "grasp_natural"
+
+[timing]                 # the generator's session estimate (s)
+countdown_s = 3
+reset_s = 5              # the operator's Space for the end, the reset, the next Space
+object_swap_s = 45
+session_setup_s = 180
+calibration_s = 90
+session_limit_s = 1800
+
+# Grasp types: the fingertips highlighted on the prompter's hand outline, or the whole hand.
+[grasps.TI]
+name = "thumb-index"
+tips = ["thumb", "index"]
+
+[grasps.TIM]
+name = "thumb-index-middle"
+tips = ["thumb", "index", "middle"]
+
+[grasps.AD]
+name = "all fingertips"
+tips = ["thumb", "index", "middle", "ring", "pinky"]
+
+[grasps.Power]
+name = "power"
+whole_hand = true
+
+[[variations]]
+id = "light"
+text = "Light grasp"
+est_s = 4
+
+[[variations]]
+id = "squeeze"
+text = "Grasp and squeeze"
+est_s = 6
+
+[[variations]]
+id = "pnp"
+text = "Pick up and place about 30 cm away"
+est_s = 8
+
+[[variations]]
+id = "pnp_sq"
+text = "Pick up, squeeze while moving, place about 30 cm away"
+est_s = 9
+
+# Approach ids and the words shown for them.
+[approaches]
+side = "from the side"
+top = "from the top"
+edge = "off the edge of the table"
+flat = "flat"
+
+[conditions.bottle_fill_rubber]
+ask = "Rubber water bottle: filled or empty?"
+choices = ["filled", "empty"]
+
+[conditions.bottle_fill_metal]
+ask = "Metal/plastic water bottle: filled or empty?"
+choices = ["filled", "empty"]
+
+# ---- Grasp objects ----
+
+[[objects]]
+id = "water_bottle_rubber"
+name = "Water bottle (rubber)"
+approaches = ["side", "top"]
+condition = "bottle_fill_rubber"
+
+[[objects]]
+id = "water_bottle_metal"
+name = "Water bottle (metal/plastic)"
+approaches = ["side", "top"]
+exclude_grasps = ["TI"]
+condition = "bottle_fill_metal"
+
+[[objects]]
+id = "baseball"
+name = "Baseball"
+
+[[objects]]
+id = "tennis_ball"
+name = "Tennis ball"
+
+[[objects]]
+id = "lacrosse_ball"
+name = "Lacrosse ball"
+
+[[objects]]
+id = "tuna_can"
+name = "Tuna can"
+approaches = ["side", "top"]
+approach_grasps.side = ["TI", "TIM"]
+
+[[objects]]
+id = "dish_soap"
+name = "Dish soap"
+approaches = ["side", "top"]
+
+[[objects]]
+id = "windex"
+name = "Windex bottle"
+approaches = ["side", "top"]
+note = "near the top of the stem"
+
+[[objects]]
+id = "soup_can"
+name = "Tomato/soup can"
+approaches = ["side", "top"]
+
+[[objects]]
+id = "peanut_butter_jar"
+name = "Peanut butter jar"
+approaches = ["side", "top"]
+
+[[objects]]
+id = "apple"
+name = "Apple"
+approaches = ["side", "top"]
+
+[[objects]]
+id = "orange"
+name = "Orange"
+approaches = ["side", "top"]
+
+[[objects]]
+id = "cracker_box"
+name = "Box of crackers"
+approaches = ["side", "top"]
+
+[[objects]]
+id = "hammer"
+name = "Hammer"
+grasps = ["AD", "Power"]
+
+[[objects]]
+id = "mug_small"
+name = "Small coffee mug"
+notes.TI = "on the lip"
+notes.TIM = "on the lip"
+
+[[objects]]
+id = "mug_large"
+name = "Large coffee mug"
+notes.TI = "on the lip"
+notes.TIM = "on the lip"
+
+[[objects]]
+id = "potato_chip"
+name = "Potato chip"
+approaches = ["side", "top"]
+grasps = ["TI", "TIM"]
+
+[[objects]]
+id = "chip_bag"
+name = "Bag of chips"
+
+[[objects]]
+id = "book"
+name = "Book"
+approaches = ["edge", "flat"]
+
+# ---- Natural tasks ----
+
+[[natural]]
+id = "pages"
+group = "pages"
+text = "Open the book, then turn pages until the time is up"
+fixed_s = 20
+
+[[natural]]
+id = "aquaphor"
+group = "containers"
+text = "Open the Aquaphor cap"
+est_s = 8
+
+[[natural]]
+id = "cream_jar"
+group = "containers"
+est_s = 8
+
+[[natural.steps]]
+id = "open"
+text = "Open the turn-lid of the medium cream jar"
+
+[[natural.steps]]
+id = "close"
+text = "Close the turn-lid of the medium cream jar"
+
+[[natural]]
+id = "mug_drink"
+group = "containers"
+text = "Use the handle to drink from the {variant} mug"
+est_s = 10
+
+[[natural.variants]]
+id = "small"
+name = "small"
+
+[[natural.variants]]
+id = "large"
+name = "large"
+
+[[natural]]
+id = "screw_panel"
+group = "screw_panel"
+est_s = 25
+
+[[natural.steps]]
+id = "loosen"
+text = "Loosen the {variant} all the way off"
+
+[[natural.steps]]
+id = "tighten"
+text = "Tighten the {variant}"
+
+[[natural.variants]]
+id = "wide_phillips"
+name = "wide Phillips screw"
+
+[[natural.variants]]
+id = "narrow_phillips"
+name = "narrow Phillips screw"
+
+[[natural.variants]]
+id = "eye_bolt"
+name = "eye bolt"
+
+[[natural.variants]]
+id = "hand_knob"
+name = "hand knob"
+
+[[natural.variants]]
+id = "allen"
+name = "Allen screw"
+
+[[natural.variants]]
+id = "hex_ratchet"
+name = "hex bolt (ratchet)"
+text.loosen = "Loosen the hex bolt all the way off with the ratchet"
+text.tighten = "Tighten the hex bolt with the ratchet"
+
+[[natural.variants]]
+id = "hex_wrench"
+name = "hex bolt (wrench)"
+text.loosen = "Loosen the hex bolt all the way off with the wrench"
+text.tighten = "Tighten the hex bolt with the wrench"
+
+[[natural.variants]]
+id = "wing_nut"
+name = "wing nut"
+
+[[natural]]
+id = "usb"
+group = "usb"
+est_s = 6
+
+[[natural.steps]]
+id = "insert"
+text = "Insert the {variant} into its port"
+
+[[natural.steps]]
+id = "remove"
+text = "Remove the {variant} from its port"
+
+[[natural.variants]]
+id = "usb_c"
+name = "USB-C plug"
+
+[[natural.variants]]
+id = "usb_a"
+name = "USB-A plug"
+
+[[natural.variants]]
+id = "usb_c_adapter"
+name = "USB-C plug (A-to-C adapter)"
+text.insert = "Insert the USB-C plug into the A-to-C adapter"
+text.remove = "Remove the USB-C plug from the A-to-C adapter"
+
+[[natural]]
+id = "grip"
+group = "grip"
+text = "Squeeze the {variant} grip-strength tool once"
+est_s = 5
+
+[[natural.variants]]
+id = "light"
+name = "light"
+
+[[natural.variants]]
+id = "medium"
+name = "medium"
+
+[[natural.variants]]
+id = "heavy"
+name = "heavy"
