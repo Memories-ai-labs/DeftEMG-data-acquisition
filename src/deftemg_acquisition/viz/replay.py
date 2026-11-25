@@ -102,11 +102,12 @@ class TextReplay:
     start_ns: int  # block_start_host_ns
     countdown_s: float
     conditions: str  # the session conditions the block used, as the live screen showed them
+    finish_ns: int = -1  # text_finish_host_ns: idle from then (-1: older files)
 
     def at(self, t: float) -> TextView:
         return text_view_at(self.block, self.attempts, self.t0_ns + round(t * 1e9),
                             start_ns=self.start_ns, countdown_s=self.countdown_s,
-                            conditions=self.conditions)  # fmt: skip
+                            conditions=self.conditions, finish_ns=self.finish_ns)  # fmt: skip
 
 
 @dataclass
@@ -226,6 +227,7 @@ def _text_replay(trial: trials.Trial, meta: dict, t0_ns: int) -> TextReplay:
         start_ns=trial.text_prompts.block_start_ns,
         countdown_s=float(meta.get("countdown_s", COUNTDOWN_S)),
         conditions=conditions,
+        finish_ns=trial.text_prompts.finish_ns,
     )
 
 

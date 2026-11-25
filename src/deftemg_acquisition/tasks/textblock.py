@@ -296,13 +296,19 @@ class TextBlock:
         return cls.from_dict(json.loads(Path(path).read_text()))
 
     def block_arrays(
-        self, attempts: list, block_start_ns: int, go_paint_ns: dict[int, int] | None = None
+        self,
+        attempts: list,
+        block_start_ns: int,
+        go_paint_ns: dict[int, int] | None = None,
+        finish_ns: int = -1,
     ) -> dict[str, np.ndarray]:
         """The trial's ``text_*`` arrays, one row per attempt (a redo adds a row), and the
-        scalar ``block_start_host_ns``. ``attempts`` are ``selfpaced.Attempt`` rows (prompt
-        index, host times, end reason, status); ``go_paint_ns`` maps a row to the host time of
-        its first painted Go frame. Dtypes: ``TEXT_INT_ARRAYS`` int64 (-1 = did not happen),
-        ``TEXT_STR_ARRAYS`` numpy unicode (a prompt field that is None is "")."""
+        scalars ``block_start_host_ns`` and ``text_finish_host_ns`` (when the block finished,
+        by Space or Enter after its last end or by an early end; -1 = not finished; not in
+        ``TEXT_INT_ARRAYS``, which are per attempt). ``attempts`` are ``selfpaced.Attempt``
+        rows (prompt index, host times, end reason, status); ``go_paint_ns`` maps a row to the
+        host time of its first painted Go frame. Dtypes: ``TEXT_INT_ARRAYS`` int64 (-1 = did
+        not happen), ``TEXT_STR_ARRAYS`` numpy unicode (a prompt field that is None is "")."""
         go_paint_ns = go_paint_ns or {}
         prompts = [self.prompts[a.index] for a in attempts]
         ints = {
@@ -322,6 +328,7 @@ class TextBlock:
             **{k: np.array(v, dtype=np.int64) for k, v in ints.items()},
             **{k: np.array(v, dtype=np.str_) for k, v in strs.items()},
             "block_start_host_ns": np.int64(block_start_ns),
+            "text_finish_host_ns": np.int64(finish_ns),
         }
 
 

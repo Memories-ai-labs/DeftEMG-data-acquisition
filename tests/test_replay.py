@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -174,10 +175,10 @@ def text_trial(tmp_path_factory):
     return _records(tmp)[0]["npz_path"]
 
 
-def test_text_block_replays_in_text_mode(text_trial, prompter_trial):
+def test_text_block_replays_in_text_mode(text_trial, prompter_trial, tmp_path):
     import pyqtgraph as pg
 
-    from deftemg_acquisition.tasks.selfpaced import COUNTDOWN, GO, IDLE, PREVIEW
+    from deftemg_acquisition.tasks.selfpaced import COUNTDOWN, DONE, GO, IDLE, PREVIEW
     from deftemg_acquisition.viz.replay import ReplayWindow, load_trial, resolve_trial
 
     d = load_trial(text_trial)
@@ -218,6 +219,20 @@ def test_text_block_replays_in_text_mode(text_trial, prompter_trial):
         win.seek(mark.onset_s + 1e-6)
         assert win.prompter.text_view.phase == GO and mark.label in win.prompt_label.text()
     win.close()
+    # The saved finish is replayed: idle after it (the trial's 0.2 s tail); a file from before
+    # it was saved stays on the last prompt's Done screen
+    assert d.text_view.at(d.duration_s).phase == IDLE
+    src = Path(text_trial)
+    session = tmp_path / src.parent.name
+    shutil.copytree(src.parent, session)
+    npz = session / src.name
+    with np.load(npz) as f:
+        arrays = {k: f[k] for k in f.files if k != "text_finish_host_ns"}
+    np.savez(npz, **arrays)
+    old = load_trial(npz)
+    assert old.text_view.finish_ns == -1
+    view = old.text_view.at(old.duration_s)
+    assert view.phase == DONE and view.can_redo
     # A lane trial replays as before: lanes at the scroll time, no text view
     lane = load_trial(resolve_trial(prompter_trial, 1, prompter_trial.parent))
     assert lane.text_view is None
@@ -225,6 +240,53 @@ def test_text_block_replays_in_text_mode(text_trial, prompter_trial):
     win.seek(lane.prompts[0].onset_s)
     assert not win.prompter.text_mode and win.prompter.text_view is None
     assert win.prompter.t == pytest.approx(win.now - lane.scroll_start_s)
+    win.close()
+
+
+def test_a_bold_line_replays_as_it_was_shown(tmp_path):
+    """A prompt with a bold line (the lift line) is replayed with it: at each Go, and in the
+    next prompt's preview with its r hint, the replayed view equals the live one, so the
+    shared painter draws the same screen."""
+    from test_text_window import Qt, _key, _records, _window
+
+    from deftemg_acquisition.tasks.selfpaced import GO, PREVIEW
+    from deftemg_acquisition.tasks.textblock import TextBlock, TextPrompt
+    from deftemg_acquisition.viz.replay import ReplayWindow, load_trial
+
+    prompts = [
+        TextPrompt(f"Tuna can, from the top\n{g} grasp\nPICK UP\nPick up, place it 30 cm away",
+                   "tuna_can", grasp=g, approach="top", variation="pick_up",
+                   highlight=("thumb", "index"), bold_line=2)
+        for g in ("TI", "TIM")
+    ]  # fmt: skip
+    live = []
+    with _window(tmp_path, [TextBlock("tuna_can", "grasp", "self_paced", prompts)],
+                 **TEXT_KW) as win:  # fmt: skip
+        win.show()
+        win.start_block()
+        _spin(0.2)
+        for _ in prompts:
+            _go(win)
+            live.append(win.prompter.text_view)
+            _spin(0.2)
+            _key(win, Qt.Key_Space)
+            _spin(0.1)
+            live.append(win.prompter.text_view)  # the next preview, or DONE
+        _key(win, Qt.Key_Space)
+        _spin(0.5)
+        assert not win.running
+    go0, preview1, go1, _ = live
+    assert (go0.phase, go1.phase, preview1.phase) == (GO, GO, PREVIEW)
+    assert preview1.can_redo and preview1.prompt.bold_line == 2
+    d = load_trial(_records(tmp_path)[0]["npz_path"])
+    assert [p.bold_line for p in d.text_view.block.prompts] == [2, 2]
+    win = ReplayWindow(d, window_s=1.0, autoplay=False)
+    for mark, view in zip(d.prompts, (go0, go1), strict=True):
+        win.seek(mark.onset_s + 0.05)
+        assert win.prompter.text_view == view
+    win.seek(d.prompts[0].offset_s + 0.01)
+    assert win.prompter.text_view == preview1
+    assert not win.prompter.grab().isNull()
     win.close()
 
 

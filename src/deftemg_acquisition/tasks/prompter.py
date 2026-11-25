@@ -22,9 +22,10 @@ output on the prompts' timeline) and be told when each frame has been painted (`
 Text blocks (``textblock.TextBlock``) are drawn in text mode instead: with ``text_view`` set (a
 ``selfpaced.TextView``), or a ``TextBlock`` as the ``sequence``, there are no lanes, capsules,
 target rings or effort bar. The area above the hand shows where the block is, a state line
-(rest and the next prompt, 3 2 1, GO) and the prompt's text, and the hand shows the grasp: a
-disc on each highlighted fingertip, or the whole hand filled for a power grasp. Only overlays
-that opt in (``PrompterOverlay.text_mode``) are drawn on text blocks.
+(rest and the next prompt, 3 2 1, GO) and the prompt's text (its ``bold_line``, e.g. "PICK UP",
+in bold), and the hand shows the grasp: a disc on each highlighted fingertip, or the whole hand
+filled for a power grasp. Only overlays that opt in (``PrompterOverlay.text_mode``) are drawn
+on text blocks.
 """
 
 from __future__ import annotations
@@ -532,8 +533,9 @@ class PrompterWidget(QtWidgets.QWidget):
 
     def _paint_text_view(self, p: QtGui.QPainter, lay: Layout) -> None:
         """Text mode, above the hand: where in the block, the state line, the prompt's text
-        (dimmed in the preview) and a hint; and the grasp on the hand during the preview, the
-        countdown and the task."""
+        (dimmed in the preview; its ``bold_line`` bold) and a hint; and the grasp on the hand
+        during the preview, the countdown and the task. A preview of a timed block (replayed
+        only) counts down to its onset and has no hint."""
         view = self.text_view or TextView(IDLE)
         prompt = view.prompt if view.phase in (PREVIEW, COUNTDOWN, GO) else None
         if prompt is not None and prompt.highlight:
@@ -544,7 +546,8 @@ class PrompterWidget(QtWidgets.QWidget):
         if view.phase == PREVIEW:
             left = view.countdown_left
             state = "Rest. Next:" if left is None else f"Rest. Next, in {math.ceil(left)} s:"
-            hint = "Space to start" if left is None else ""
+            redo = "   r: redo the last prompt" if view.can_redo else ""
+            hint = f"Space to start{redo}" if left is None else ""
         elif view.phase == COUNTDOWN:
             state, hint = str(max(1, math.ceil(view.countdown_left or 0.0))), ""
         elif view.phase == GO:
@@ -584,17 +587,56 @@ class PrompterWidget(QtWidgets.QWidget):
             top += state_h
         if prompt is not None and bottom > top:
             area = QtCore.QRectF(32, top, width - 64, bottom - top)
-            flags = QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap
-            font.setBold(False)
-            for size in range(26, 9, -1):  # smaller text until it fits a small window
-                font.setPointSizeF(font_points(size))
-                p.setFont(font)
-                text = p.boundingRect(area, flags, prompt.text)
-                if text.height() <= area.height() and text.width() <= area.width():
-                    break
             p.setPen(_qcolor(FOREGROUND, 120 if view.phase == PREVIEW else 255))
-            p.drawText(area, flags, prompt.text)
+            if prompt.bold_line is None:
+                self._paint_prompt_text(p, area, prompt.text)
+            else:
+                self._paint_prompt_lines(p, area, prompt.text.split("\n"), prompt.bold_line)
         p.restore()
+
+    @staticmethod
+    def _paint_prompt_text(p: QtGui.QPainter, area: QtCore.QRectF, text: str) -> None:
+        """The prompt's text in one regular font, centred in ``area``, as large as fits (from
+        the top if too tall even at the smallest size)."""
+        flags = QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap
+        font = p.font()
+        font.setBold(False)
+        for size in range(26, 9, -1):  # smaller text until it fits a small window
+            font.setPointSizeF(font_points(size))
+            p.setFont(font)
+            r = p.boundingRect(area, flags, text)
+            if r.height() <= area.height() and r.width() <= area.width():
+                break
+        if r.height() > area.height():  # too tall even at the smallest size: from the top
+            flags = QtCore.Qt.AlignHCenter | QtCore.Qt.AlignTop | QtCore.Qt.TextWordWrap
+        p.drawText(area, flags, text)
+
+    @staticmethod
+    def _paint_prompt_lines(
+        p: QtGui.QPainter, area: QtCore.QRectF, lines: list[str], bold: int
+    ) -> None:
+        """The prompt's lines stacked and centred in ``area``, line ``bold`` in bold, the rest
+        regular; one size for all, as large as the whole stack fits (bold is wider). A stack
+        too tall even at the smallest size starts at the top, clear of the state line."""
+        flags = QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap
+        font = p.font()
+        for size in range(26, 9, -1):  # smaller text until it fits a small window
+            font.setPointSizeF(font_points(size))
+            fonts = [QtGui.QFont(font) for _ in lines]
+            for i, f in enumerate(fonts):
+                f.setBold(i == bold)
+            rects = []
+            for line, f in zip(lines, fonts, strict=True):
+                p.setFont(f)  # an empty line keeps its height, as in one drawText
+                rects.append(p.boundingRect(area, flags, line or " "))
+            height = sum(r.height() for r in rects)
+            if height <= area.height() and max(r.width() for r in rects) <= area.width():
+                break
+        y = area.top() + max(0.0, (area.height() - height) / 2)  # too tall: from the top
+        for line, f, r in zip(lines, fonts, rects, strict=True):
+            p.setFont(f)
+            p.drawText(QtCore.QRectF(area.left(), y, area.width(), r.height()), flags, line)
+            y += r.height()
 
     def effort_bar(self, lay: Layout) -> QtCore.QRectF:
         """Where the effort bar's track is (its fill runs from the left edge, 0 to 1)."""

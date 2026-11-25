@@ -1,6 +1,8 @@
 """The self-paced runner without Qt: keys, timing, redo, early end, resume, saved arrays, and
 the live view agreeing with the replayed one."""
 
+import copy
+
 import numpy as np
 import pytest
 
@@ -102,7 +104,7 @@ def test_full_flow_through_a_block():
         assert r.phase == GO and r.view().prompt is r.block.prompts[i]
         assert _do(r, c, t + 9.0, "space")
         t += 9.0
-    assert r.phase == DONE and r.view() == TextView(DONE, None, 2, 3)
+    assert r.phase == DONE and r.view() == TextView(DONE, None, 2, 3, can_redo=True)
     assert not r.finished
     assert _do(r, c, t + 2.0, "space")
     assert r.finished and r.completed
@@ -435,7 +437,8 @@ def _messy_run() -> SelfPacedRunner:
 def test_arrays_have_one_length_and_the_documented_dtypes(tmp_path):
     r = _messy_run()
     arrays = r.arrays({1: ns(6.01), 3: ns(24.02)})
-    assert set(arrays) == {*TEXT_INT_ARRAYS, *TEXT_STR_ARRAYS, "block_start_host_ns"}
+    assert set(arrays) == {*TEXT_INT_ARRAYS, *TEXT_STR_ARRAYS, "block_start_host_ns",
+                           "text_finish_host_ns"}  # fmt: skip
     for k in TEXT_INT_ARRAYS:
         assert arrays[k].dtype == np.int64 and arrays[k].shape == (5,), k
     for k in TEXT_STR_ARRAYS:
@@ -443,6 +446,8 @@ def test_arrays_have_one_length_and_the_documented_dtypes(tmp_path):
     assert (
         arrays["block_start_host_ns"].dtype == np.int64 and arrays["block_start_host_ns"] == HOST0
     )
+    finish = arrays["text_finish_host_ns"]  # a scalar: the early end (Enter) at 30
+    assert finish.dtype == np.int64 and finish.shape == () and finish == ns(30)
     assert arrays["text_status"].tolist() == [CANCELLED, REDO, OK, REDO, INCOMPLETE]
     assert arrays["text_prompt_index"].tolist() == [0, 0, 0, 1, 1]
     assert arrays["text_go_paint_ns"].tolist() == [-1, ns(6.01), -1, ns(24.02), -1]
@@ -456,6 +461,7 @@ def test_arrays_have_one_length_and_the_documented_dtypes(tmp_path):
 
 def test_arrays_of_no_attempts_keep_their_dtypes():
     arrays = _grasp_block().block_arrays([], HOST0)
+    assert arrays["text_finish_host_ns"] == -1  # not finished
     assert all(arrays[k].dtype == np.int64 and arrays[k].size == 0 for k in TEXT_INT_ARRAYS)
     assert all(arrays[k].dtype.kind == "U" and arrays[k].size == 0 for k in TEXT_STR_ARRAYS)
 
@@ -546,7 +552,8 @@ def _replayed(r: SelfPacedRunner, t_ns: int) -> TextView:
     arrays = r.arrays()
     return text_view_at(r.block, attempts_from_arrays(arrays), t_ns,
                         start_ns=int(arrays["block_start_host_ns"]), countdown_s=r.countdown_s,
-                        conditions=r.conditions)  # fmt: skip
+                        conditions=r.conditions,
+                        finish_ns=int(arrays["text_finish_host_ns"]))  # fmt: skip
 
 
 @pytest.mark.parametrize("make", [_grasp_block, _natural_block, grasp_calibration_block])
@@ -559,7 +566,7 @@ def test_live_view_agrees_with_the_replayed_view(make):
             41.0: "space", 60.0: "space", 61.0: "r", 62.0: "space", 70.0: "space",
             80.0: "space"}  # fmt: skip
     seen = []
-    for t in np.arange(0.0, 85.0, 0.25):
+    for t in np.arange(0.0, 81.75, 0.25):  # Space at DONE (60 or 80) finishes; 1.5 s after
         t = float(t)
         clock.ns = ns(t)
         if t % 1.0 == 0.5:  # between ticks: the view follows the schedule without an update
@@ -571,15 +578,83 @@ def test_live_view_agrees_with_the_replayed_view(make):
         v = r.view()
         assert v.phase == r.phase, t
         seen.append((clock.host_ns(), v))
-    r.end_block()
+    assert r.finished and r.completed and r.finish_ns in (ns(60), ns(80))
     phases = {v.phase for _, v in seen}
-    assert phases == {PREVIEW, COUNTDOWN, GO, DONE}
+    assert phases == {PREVIEW, COUNTDOWN, GO, DONE, IDLE}
+    tail = [v for t_ns, v in seen if t_ns >= r.finish_ns]
+    assert len(tail) >= 7 and all(v == TextView(IDLE, total=v.total, conditions=v.conditions)
+                                  for v in tail)  # fmt: skip
+    assert not any(v.can_redo for v in tail)
     assert any(v.time_left is not None for _, v in seen) == (make is not _grasp_block)
     for t_ns, v in seen:
         assert v.conditions == "bottle: filled"
         if v.phase in (PREVIEW, COUNTDOWN, GO):
             assert v.attempt >= 0 and v.prompt is block.prompts[v.index]
         assert _replayed(r, t_ns) == v, (t_ns - HOST0) / 1e9
+
+
+@pytest.mark.parametrize("start_index", [0, 1])
+def test_can_redo_says_whether_redo_would_act(start_index):
+    """At every moment (between updates too), the view's ``can_redo`` is what ``redo()``
+    returns then (tried on a copy): not at the first prompt (of a resumed block too), nor in
+    the preview a redo just started; in the next prompt's preview after an end, the countdown,
+    Go and DONE; never once the block has finished (Enter at DONE, or Esc mid-Go: idle). The
+    replayed view agrees."""
+    block = TextBlock("b04_mixed", "natural", "self_paced", [
+        TextPrompt("Open the jar", "jar"),
+        TextPrompt("Turn pages", "pages", duration_s=2.0),
+        TextPrompt("Close the jar", "jar"),
+    ])  # fmt: skip
+    r, c = _runner(block, start_index=start_index)
+    # From 0: a cancel, a redo in Go, prompt 0 done; prompt 1 (2 s) from 13.5 ends by its timer
+    # at 18.5, between updates; r at 19 redoes it from prompt 2's preview; DONE at 30, and
+    # Enter finishes it at 32. From 1: Esc in prompt 2's Go at 24 ends it early.
+    keys = {1.0: "space", 2.0: "r", 3.0: "space", 7.5: "r", 8.0: "space", 12.0: "space",
+            13.5: "space", 19.0: "r", 20.0: "space", 26.0: "space", 30.0: "space",
+            32.0: "enter"}  # fmt: skip
+    if start_index == 1:
+        keys[24.0] = "enter"
+    seen = {False: 0, True: 0}
+    for t in np.arange(0.0, 34.0, 0.25):
+        t = float(t)
+        c.ns = ns(t)
+        if t % 1.0 != 0.5:  # at x.5 the view follows the schedule without an update
+            r.update()
+        v = r.view()
+        assert v.can_redo == copy.deepcopy(r).redo(), (t, v)
+        assert _replayed(r, c.ns) == v, t
+        seen[v.can_redo] += 1
+        if t in keys:
+            {"space": r.space, "r": r.redo, "enter": r.end_block}[keys[t]]()
+    assert all(seen.values()) and r.finished and r.completed == (start_index == 0)
+    assert r.view().phase == IDLE and r.phase == IDLE
+
+
+def test_can_redo_at_a_timer_end_before_the_update():
+    """The next preview shown at a fixed duration's end, before the runner has ended the
+    attempt (its status still ""), offers r already, as it does once updated."""
+    block = TextBlock("b03_pages", "natural", "self_paced", [
+        TextPrompt("Turn pages", "pages", duration_s=2.0),
+        TextPrompt("Close the book", "pages"),
+    ])  # fmt: skip
+    r, c = _runner(block)
+    _do(r, c, 1.0, "space")
+    at(r, c, 4.5)
+    assert r.phase == GO
+    c.ns = r.attempts[0].go_ns + 2_000_000_000  # the timer's end, no update yet
+    assert r.attempts[0].status == "" and len(r.attempts) == 1
+    v = r.view()
+    assert (v.phase, v.index, v.can_redo) == (PREVIEW, 1, True)
+    r.update()
+    assert r.attempts[0].status == OK and r.view() == v
+    assert r.redo() and r.view().can_redo is False  # the redo's own preview: nothing to redo
+
+
+def test_a_timed_block_never_offers_r(timed_calibration):
+    attempts = _timed_attempts(timed_calibration)
+    for t in np.arange(0.0, 40.0, 0.5):
+        v = text_view_at(timed_calibration, attempts, ns(float(t)), start_ns=HOST0)
+        assert not v.can_redo, t
 
 
 def test_view_before_the_block_starts_is_idle(timed_calibration):

@@ -44,7 +44,7 @@ from deftemg_acquisition.clock import host_ns as _host_ns
 
 from .textblock import COUNTDOWN_S, TIMED, TextBlock, TextPrompt
 
-IDLE = "idle"  # no prompt (before the block starts, after it ends early, a timed block's tail)
+IDLE = "idle"  # no prompt (before the block starts, once it has finished, a timed block's tail)
 PREVIEW = "preview"  # rest; the next prompt is shown dimmed, with its grasp highlighted
 COUNTDOWN = "countdown"  # 3 2 1 before Go
 GO = "go"  # the task is under way
@@ -76,6 +76,10 @@ class TextView:
     countdown_left: float | None = None  # s until Go (countdown; preview of a timed block)
     time_left: float | None = None  # s until a fixed-duration task ends by itself
     conditions: str = ""  # the session's conditions this block uses, as one line
+    # Whether ``r`` (``SelfPacedRunner.redo()``) would act now: always in the countdown, Go
+    # and DONE; in a preview, when the previous attempt is "ok" (not at a resumed block's first
+    # prompt, nor in the preview a redo just started). Never in a timed block (only replayed).
+    can_redo: bool = False
 
     def __post_init__(self):
         if self.phase not in PHASES:
@@ -121,14 +125,19 @@ def text_view_at(
     start_ns: int | None = None,
     countdown_s: float = COUNTDOWN_S,
     conditions: str = "",
+    finish_ns: int = -1,
 ) -> TextView:
     """What the prompter shows at host time ``t_ns``, from the block's attempts so far.
 
     ``start_ns`` is the block's start (``block_start_host_ns``; needed for a timed block, whose
-    view follows its schedule). ``countdown_s`` is the trial's countdown. An attempt still under
+    view follows its schedule). ``countdown_s`` is the trial's countdown. ``finish_ns`` is when
+    the block finished (``text_finish_host_ns``; -1: not yet, or a file from before it was
+    saved); from then on the view is idle, as the block's tail was shown. An attempt still under
     way is followed by its schedule (Go ``countdown_s`` after the countdown starts, a fixed
     duration's end), so the live view does not wait for the runner's next update and agrees
-    with the replayed view at every time.
+    with the replayed view at every time. ``can_redo`` is decided as ``redo()`` would at that
+    time: the next prompt's preview after an end counts its attempt as "ok" even before the
+    runner has set it (a timer end not yet applied), or after a later redo voided it (replay).
     """
     n = len(block.prompts)
 
@@ -136,6 +145,8 @@ def text_view_at(
         prompt = block.prompts[i] if phase in (PREVIEW, COUNTDOWN, GO) else None
         return TextView(phase, prompt, i, n, attempt, conditions=conditions, **kw)
 
+    if finish_ns != -1 and t_ns >= finish_ns:
+        return view(IDLE)
     if block.mode == TIMED:
         if start_ns is None:
             raise ValueError(f"{block.name}: a timed block's view needs start_ns")
@@ -163,15 +174,16 @@ def text_view_at(
         if reason == BLOCK_END:
             return view(IDLE)
         if a.index + 1 < n:  # the next preview (its attempt may be dropped later by a redo)
-            return view(PREVIEW, a.index + 1, k + 1)
-        return view(DONE, n - 1)
+            return view(PREVIEW, a.index + 1, k + 1, can_redo=True)
+        return view(DONE, n - 1, can_redo=True)
     if a.countdown_ns == -1 or t_ns < a.countdown_ns:
-        return view(PREVIEW, a.index, k)
+        # the previous attempt's status was final when this preview began
+        return view(PREVIEW, a.index, k, can_redo=k > 0 and attempts[k - 1].status == OK)
     if go == -1 or t_ns < go:  # countdown_s only for a countdown cancelled before Go
         left = ((go if go != -1 else a.countdown_ns + _ns(countdown_s)) - t_ns) / 1e9
-        return view(COUNTDOWN, a.index, k, countdown_left=left)
+        return view(COUNTDOWN, a.index, k, countdown_left=left, can_redo=True)
     left = None if duration is None else (go + _ns(duration) - t_ns) / 1e9
-    return view(GO, a.index, k, time_left=left)
+    return view(GO, a.index, k, time_left=left, can_redo=True)
 
 
 def _seconds(v, name: str) -> float:
@@ -214,6 +226,7 @@ class SelfPacedRunner:
         self.phase = PREVIEW
         self.finished = False
         self.completed = False
+        self.finish_ns = -1  # host ns of the key that finished the block (-1: not finished)
         self._markers: list[str] = []
         self._space_from = -math.inf  # host ns; Space is ignored before this (debounce)
         self.start_ns = host_ns()  # block_start_host_ns
@@ -282,7 +295,7 @@ class SelfPacedRunner:
         elif self.phase == GO:
             self._end(t, OPERATOR)
         else:  # DONE
-            self.finished = self.completed = True
+            self._finish(t, completed=True)
         return True
 
     def redo(self) -> bool:
@@ -319,20 +332,25 @@ class SelfPacedRunner:
         if self.finished:
             return self.completed
         if self.phase == DONE:
-            self.finished = self.completed = True
+            self._finish(ns, completed=True)
             return True
         a = self.attempts[-1]
         if a.status == "":
             self._stop(a, ns, BLOCK_END, INCOMPLETE)
-        self.phase, self.finished = IDLE, True
+        self._finish(ns, completed=False)
         return False
+
+    def _finish(self, ns: int, completed: bool) -> None:
+        self.phase, self.finished, self.completed, self.finish_ns = IDLE, True, completed, ns
 
     # --- results ---
 
     def view(self) -> TextView:
-        """What the prompter shows now (``text_view_at`` at the host clock's now)."""
+        """What the prompter shows now (``text_view_at`` at the host clock's now); idle once
+        the block has finished."""
         return text_view_at(self.block, self.attempts, self._host_ns(), start_ns=self.start_ns,
-                            countdown_s=self.countdown_s, conditions=self.conditions)  # fmt: skip
+                            countdown_s=self.countdown_s, conditions=self.conditions,
+                            finish_ns=self.finish_ns)  # fmt: skip
 
     def resume_index(self) -> int:
         """Where a new run of this block would start: after the last prompt with an "ok"
@@ -342,9 +360,11 @@ class SelfPacedRunner:
                    default=self.start_index)  # fmt: skip
 
     def arrays(self, go_paint_ns: Mapping[int, int] | None = None) -> dict[str, np.ndarray]:
-        """The trial's ``text_*`` arrays and ``block_start_host_ns``; ``go_paint_ns`` maps an
-        attempt row to its first painted Go frame (``PrompterWidget.go_paint_ns``)."""
-        return self.block.block_arrays(self.attempts, self.start_ns, go_paint_ns)
+        """The trial's ``text_*`` arrays, ``block_start_host_ns`` and the scalar
+        ``text_finish_host_ns``; ``go_paint_ns`` maps an attempt row to its first painted Go
+        frame (``PrompterWidget.go_paint_ns``)."""
+        return self.block.block_arrays(self.attempts, self.start_ns, go_paint_ns,
+                                       finish_ns=self.finish_ns)  # fmt: skip
 
     def markers(self) -> list[str]:
         """The marker events since the last call, in order: ``text|preview|i``,

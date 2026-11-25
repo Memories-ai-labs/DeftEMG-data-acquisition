@@ -35,8 +35,13 @@ from deftemg_acquisition.tasks.textblock import (  # noqa: E402
     TextBlock,
     TextPrompt,
 )
+from deftemg_acquisition.viz.screen import font_points  # noqa: E402
 
 TEXT = "Tuna can, from the top\nThumb-index grasp\nLight grasp"
+LIFT = "Tennis ball, from the side\nThumb-index-middle grasp\nPICK UP\nPick up, place 30 cm away"
+LIFT_PROMPT = TextPrompt(
+    LIFT, "tennis_ball", grasp="TIM", highlight=("thumb", "index"), bold_line=2
+)  # its lift line bold
 
 
 def _prompt(highlight=("thumb", "index"), **kw) -> TextPrompt:
@@ -237,6 +242,7 @@ def test_prompt_text_is_dimmed_in_the_preview_and_go_is_green():
         TextView(PREVIEW, _prompt(HAND), index=3, total=4, countdown_left=2.2),  # timed block
         TextView(COUNTDOWN, _prompt(), index=1, total=5, countdown_left=0.4),
         TextView(GO, _prompt(), index=4, total=5, attempt=7, time_left=12.3),
+        TextView(GO, LIFT_PROMPT, index=2, total=5, attempt=2),
         TextView(DONE, None, index=4, total=5),
     ],
 )
@@ -251,6 +257,98 @@ def test_every_text_view_paints(view, size):
     w.message = "Resumes at prompt 3 of 9. " * 4
     w.warning = "glove disconnected"
     _render(w)
+
+
+class _SpyPainter:
+    """A painter on an image that records each ``drawText``: the text, its font, and where the
+    text landed (its bounding rect)."""
+
+    def __init__(self, img: QtGui.QImage):
+        self._p = QtGui.QPainter(img)
+        self.texts: list[tuple[str, QtGui.QFont, QtCore.QRectF]] = []
+
+    def __getattr__(self, name):
+        return getattr(self._p, name)
+
+    def drawText(self, rect, flags, text):  # noqa: N802 (Qt's name)
+        self.texts.append((text, self._p.font(), self._p.boundingRect(rect, flags, text)))
+        self._p.drawText(rect, flags, text)
+
+
+def _drawn(w: PrompterWidget, view: TextView) -> list[tuple[str, QtGui.QFont, QtCore.QRectF]]:
+    """What the text view's painter writes, in order."""
+    w.text_view = view
+    img = QtGui.QImage(w.size(), QtGui.QImage.Format_ARGB32)
+    spy = _SpyPainter(img)
+    w._paint_text_view(spy, w.layout_for_size())
+    spy.end()
+    return spy.texts
+
+
+def test_a_prompt_without_a_bold_line_is_one_regular_text():
+    w = _widget()
+    texts = _drawn(w, TextView(GO, _prompt(), index=0, total=4, attempt=0))
+    assert [(t, f.bold()) for t, f, _ in texts if "Tuna" in t] == [(TEXT, False)]
+
+
+@pytest.mark.parametrize("bold", [0, 2, 3])
+@pytest.mark.parametrize("phase", [PREVIEW, GO])
+@pytest.mark.parametrize("size", [(500, 800), (400, 600)])
+def test_the_bold_line_alone_is_bold_and_the_stack_fits(bold, phase, size):
+    """Each line drawn on its own, in order, only ``bold_line`` bold; the stack sits between
+    the state line and the hint, inside the side margins, lines not overlapping, also in the
+    smallest window the prompter takes (where it shrinks)."""
+    w = _widget(size=size)
+    assert (w.width(), w.height()) == size
+    prompt = TextPrompt(LIFT, "tennis_ball", grasp="TIM", bold_line=bold)
+    texts = _drawn(w, TextView(phase, prompt, index=1, total=4, attempt=1))
+    lines = LIFT.split("\n")
+    state = next(r for t, _, r in texts if t in ("GO", "Rest. Next:"))
+    hint = next(r for t, _, r in texts if t.startswith(("Space", "r:")))
+    drawn = [(t, f, r) for t, f, r in texts if t in lines]
+    assert [(t, f.bold()) for t, f, _ in drawn] == [(ln, i == bold) for i, ln in enumerate(lines)]
+    for (_, _, r), (_, _, below) in zip(drawn, drawn[1:], strict=False):
+        assert r.bottom() <= below.top() + 1  # stacked in order
+    assert drawn[0][2].top() >= state.bottom() - 1 and drawn[-1][2].bottom() <= hint.top() + 1
+    assert all(r.left() >= 32 - 1 and r.right() <= w.width() - 32 + 1 for _, _, r in drawn)
+
+
+def test_the_bold_line_shrinks_with_the_rest_in_a_small_window():
+    """One size for the whole stack, the largest that fits: the smallest window the prompter
+    takes (400 x 600) draws every line smaller."""
+    prompt = LIFT_PROMPT
+    sizes = []
+    for size in [(900, 1000), (400, 600)]:
+        w = _widget(size=size)
+        assert (w.width(), w.height()) == size
+        texts = _drawn(w, TextView(GO, prompt, index=1, total=4, attempt=1))
+        sizes.append({f.pointSizeF() for t, f, _ in texts if t in LIFT.split("\n")})
+    (big,), (small,) = sizes
+    assert big == font_points(26) and small < big
+
+
+@pytest.mark.parametrize(
+    "view, hint",
+    [
+        (TextView(PREVIEW, _prompt(), index=2, total=4, can_redo=True),
+         "Space to start   r: redo the last prompt"),
+        # the block's (or a resumed block's) first prompt, the preview a redo just started
+        (TextView(PREVIEW, _prompt(), index=0, total=4), "Space to start"),
+        # a timed block's preview (replayed only): no hint, whatever can_redo says
+        (TextView(PREVIEW, _prompt(), index=2, total=4, countdown_left=2.2, can_redo=True),
+         None),
+        (TextView(GO, _prompt(), index=2, total=4, attempt=2, can_redo=True),
+         "Space when finished"),
+        (TextView(DONE, None, index=3, total=4, can_redo=True),
+         "Space to finish the block, r to redo the last one"),
+    ],
+)  # fmt: skip
+def test_the_hint_offers_r_only_when_a_redo_would_act(view, hint):
+    texts = [t for t, _, _ in _drawn(_widget(), view)]
+    hints = [t for t in texts if "Space" in t or "r:" in t]
+    assert hints == ([hint] if hint else [])
+    if view.countdown_left is not None:
+        assert "Rest. Next, in 3 s:" in texts
 
 
 def test_text_view_rejects_an_unknown_phase():

@@ -19,7 +19,15 @@ from deftemg_acquisition.tasks import app, prompter  # noqa: E402
 from deftemg_acquisition.tasks.app import TaskPlugin, TaskWindow  # noqa: E402
 from deftemg_acquisition.tasks.effort import EffortReference  # noqa: E402
 from deftemg_acquisition.tasks.prompter import PrompterOverlay  # noqa: E402
-from deftemg_acquisition.tasks.selfpaced import DONE, GO, IDLE, PREVIEW, TextView  # noqa: E402
+from deftemg_acquisition.tasks.selfpaced import (  # noqa: E402
+    DONE,
+    GO,
+    IDLE,
+    PREVIEW,
+    TextView,
+    attempts_from_arrays,
+    text_view_at,
+)
 from deftemg_acquisition.tasks.sequence import CALIBRATION, Prompt, Sequence  # noqa: E402
 from deftemg_acquisition.tasks.textblock import (  # noqa: E402
     GRASP_CALIBRATION,
@@ -150,6 +158,7 @@ def test_grasp_block_runs_to_the_end_and_saves_its_arrays(tmp_path):
         assert win.running and win.prompter.text_view.phase == DONE
         clock.advance(1.0)
         _key(win, Qt.Key_Space)  # finish: saved after the tail
+        finish = clock.ns
         assert win.running and win.prompter.text_view.phase == IDLE
         _wait(win, clock, TAIL_S - 0.01)
         assert win.running
@@ -168,9 +177,11 @@ def test_grasp_block_runs_to_the_end_and_saves_its_arrays(tmp_path):
         assert absent not in meta
     data = np.load(rec["npz_path"])
     keys = set(data.files)
-    assert set(TEXT_INT_ARRAYS) | set(TEXT_STR_ARRAYS) | {"block_start_host_ns"} <= keys
+    scalars = {"block_start_host_ns", "text_finish_host_ns"}
+    assert set(TEXT_INT_ARRAYS) | set(TEXT_STR_ARRAYS) | scalars <= keys
     assert not [k for k in keys if k.startswith(("prompt_", "effort", "scroll_start"))]
     assert int(data["block_start_host_ns"]) == start
+    assert data["text_finish_host_ns"].shape == () and int(data["text_finish_host_ns"]) == finish
     assert data["text_prompt_index"].tolist() == [0, 1]
     assert data["text_status"].tolist() == ["ok", "ok"]
     assert data["text_end_reason"].tolist() == ["operator", "operator"]
@@ -184,6 +195,49 @@ def test_grasp_block_runs_to_the_end_and_saves_its_arrays(tmp_path):
         "text|preview|0", "text|countdown|0", "text|go|0|tuna_can:TI", "text|end|0",
         "text|preview|1", "text|countdown|1", "text|go|1|tuna_can:TIM", "text|end|1",
     ]  # fmt: skip
+
+
+def test_the_tail_after_the_finish_replays_as_shown(tmp_path):
+    """Live, a finished block shows idle during its tail; the saved npz (attempts and
+    ``text_finish_host_ns``) gives the same view at every sampled time, DONE before the
+    finish (with r offered) and idle after it."""
+    clock = Clock()
+    block = _grasp_block()
+    seen = []
+
+    def sample():
+        seen.append((clock.ns, win.prompter.text_view))
+
+    with _window(tmp_path, [block], clock) as win:
+        win.start_block()
+        sample()
+        for _ in block.prompts:
+            _do_prompt(win, clock)
+            sample()
+        _wait(win, clock, 1.5)
+        sample()
+        clock.advance(0.01)  # a sample at the finish's ns would be before the key
+        _key(win, Qt.Key_Space)  # finish
+        finish = clock.ns
+        sample()
+        for _ in range(4):  # through the tail, then saved
+            _wait(win, clock, TAIL_S / 5)
+            sample()
+        assert win.running
+        _wait(win, clock, TAIL_S / 5)
+        assert not win.running
+    phases = [v.phase for _, v in seen]
+    assert phases[:4] == [PREVIEW, PREVIEW, DONE, DONE] and phases[4:] == [IDLE] * 5
+    assert seen[3][1].can_redo and not any(v.can_redo for _, v in seen[4:])
+    rec = _records(tmp_path)[0]
+    with np.load(rec["npz_path"]) as data:
+        attempts = attempts_from_arrays(data)
+        start, saved = int(data["block_start_host_ns"]), int(data["text_finish_host_ns"])
+    assert saved == finish
+    sequence = TextBlock.from_dict(rec["metadata"]["sequence"])
+    for t_ns, view in seen:
+        replayed = text_view_at(sequence, attempts, t_ns, start_ns=start, finish_ns=saved)
+        assert replayed == view, (t_ns - finish) / S
 
 
 def test_fixed_duration_ends_by_itself_or_early_by_space(tmp_path):

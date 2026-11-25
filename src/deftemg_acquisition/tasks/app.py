@@ -707,9 +707,9 @@ class TaskWindow(QtWidgets.QMainWindow):
         runner.update()
         now = self._host_ns()
         if runner.finished and runner.completed and self._finish_at_ns is None:
-            self._finish_at_ns = now + round(self.tail_s * 1e9)
-        # A finished block shows nothing while its tail is recorded
-        self.prompter.text_view = TextView(IDLE) if runner.finished else runner.view()
+            self._finish_at_ns = runner.finish_ns + round(self.tail_s * 1e9)
+        # A finished block shows nothing (idle) while its tail is recorded
+        self.prompter.text_view = runner.view()
         for marker in runner.markers():
             self.session.push_marker(marker)
         self.prompter.update()

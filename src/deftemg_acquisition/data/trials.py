@@ -113,6 +113,8 @@ class TextPrompts:
     step: np.ndarray
     text: np.ndarray
     block_start_ns: int
+    # when the block finished (the key that ended it; -1: not saved, a file from before it was)
+    finish_ns: int
     resume_from: int  # the block's prompt this run started at (0: a fresh run)
     resumed_trial: str | None  # npz stem of the run before, for a resumed run
 
@@ -328,6 +330,7 @@ def _text_prompts(arrays: dict[str, np.ndarray], meta: dict[str, Any]) -> TextPr
         go_paint_ns=ints("go_paint_ns"),
         **{k: strs(k) for k in ("end_reason", "status", *PROMPT_ARRAY_FIELDS)},
         block_start_ns=int(arrays["block_start_host_ns"]),
+        finish_ns=int(arrays.get("text_finish_host_ns", -1)),
         resume_from=int(meta.get("text_resume_from", 0)),
         resumed_trial=meta.get("text_resumed_trial"),
     )
