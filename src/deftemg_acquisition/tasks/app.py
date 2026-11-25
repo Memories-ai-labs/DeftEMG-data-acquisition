@@ -21,6 +21,17 @@ for a lane block. A timed text block (the grasp calibration) runs from its sched
 itself ``tail_s`` after its last prompt. Markers: ``text|preview|i``, ``text|countdown|i``,
 ``text|go|i|<label>``, ``text|end|i``; the sync patch flashes at each Go.
 
+Resume: Shift on a self-paced text block that was ended early starts a new trial at the prompt
+after the last one with an "ok" attempt (prompt order is fixed, so those form a prefix), or where
+that run started if it had none; the idle screen names that prompt and counts only the prompts
+left. Each text block trial's metadata has ``text_resume_from`` (the first prompt's index, 0 for
+a fresh run) and, for a resumed run, ``text_resumed_trial`` (the npz file name, without
+extension, of the run just before; set even when that run had no "ok" attempt), so a block's
+trials form a chain; ``text_prompt_index`` stays an index into the whole block. A block that
+completes forgets where it stopped, so redoing a done block starts at its first prompt. Timed
+blocks (the grasp calibration) always start at their first prompt. Resume state lives in the
+window only: after a restart a block starts at its first prompt.
+
 Recalibration (``recalibrate_s``, e.g. [600, 1200]) keeps two clocks: ``lane`` for the press,
 pinch and squeeze calibrations (before lane blocks) and ``grasp`` for the grasp calibration
 (before text blocks); one kind never counts for the other. Once a calibration block of a kind
@@ -63,6 +74,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -106,6 +118,17 @@ def block_conditions(block: Sequence | TextBlock) -> list[str]:
     if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
         raise ValueError(f"{block.name}: params.conditions must be a list of names, got {names!r}")
     return names
+
+
+@dataclass(frozen=True)
+class ResumePoint:
+    """Where an early-ended self-paced text block resumes: ``resume_index`` (the first prompt of
+    the next run) and ``last_trial`` (the npz file's stem of the run that ended early). Kept
+    with the block object itself, so its key (``id(block)``) can't point at another block."""
+
+    block: TextBlock
+    resume_index: int
+    last_trial: str
 
 
 def source_note(sources: dict) -> str:
@@ -204,6 +227,9 @@ class TaskWindow(QtWidgets.QMainWindow):
         self._runner: SelfPacedRunner | None = None
         self._finish_at_ns: int | None = None  # a finished text block is saved at this time
         self._close_after = False  # Esc finished a text block: quit once it is saved
+        # Early-ended self-paced text blocks, keyed by the block's identity (not its index:
+        # calibration blocks are put in and taken out, shifting the indices)
+        self._resume: dict[int, ResumePoint] = {}
 
         self.setWindowTitle("Finger-press prompter")
         self.sync_patch = sync_patch
@@ -289,11 +315,16 @@ class TaskWindow(QtWidgets.QMainWindow):
         done = f"{len(self.completed)}/{n} blocks done"
         self.prompter.header = f"Block {self.current + 1}/{n}: {self.sequence.name}   ({done})"
         if len(self.completed) == n:
+            # a done block that was redone and ended early: say so, Shift goes on with it
+            line = self._resume_line(self.sequence)
+            redo = f"{self.sequence.name}: {line}, Shift to go on.\n" if line else ""
             self.prompter.message = self._source_note + (
-                "All blocks done.\nEsc to quit, or Left/Right then Shift to redo a block."
-            )
+                "All blocks done.\n" + redo
+                + "Esc to quit, or Left/Right then Shift to redo a block."
+            )  # fmt: skip
         else:
-            again = "  (already done)" if self.current in self.completed else ""
+            resumes = self.resume_point(self.sequence) is not None  # the summary says so
+            again = "  (already done)" if self.current in self.completed and not resumes else ""
             how = self.sequence.params.get("instructions")
             what = (self._text_summary() if isinstance(self.sequence, TextBlock) else
                     f"{len(self.sequence.prompts)} presses, "
@@ -315,13 +346,42 @@ class TaskWindow(QtWidgets.QMainWindow):
         block = self.sequence
         place = block.params.get("object_name")
         n = len(block.prompts)
+        resume = self.resume_point(block)
         if block.mode == TIMED:
             length = f"{n} grasps, {block.duration_s + self.tail_s:.0f} s"
-        else:
+        elif resume is None:
             length = f"{n} prompts, about {max(1, round(block.estimate_s() / 60))} min"
+        else:  # only what is left
+            k = resume.resume_index
+            left = n - k
+            length = (f"{self._resume_line(block)}\n{left} prompt{'s' if left != 1 else ''} "
+                      f"left, about {max(1, round(block.estimate_s(k) / 60))} min")  # fmt: skip
         conds = self._conditions_line(block)
         return ((f"Place: {place}\n" if place else "") + length + "\n"
                 + (f"Conditions: {conds}\n" if conds else ""))  # fmt: skip
+
+    def _resume_line(self, block: Sequence | TextBlock) -> str:
+        """Where the current ``block`` resumes, for the idle screen; empty if it doesn't."""
+        resume = self.resume_point(block)
+        if resume is None:
+            return ""
+        where = f"prompt {resume.resume_index + 1} of {len(block.prompts)}"
+        done = self.current in self.completed
+        return f"Done before; redo resumes at {where}" if done else f"Resumes at {where}"
+
+    def resume_point(self, block: Sequence | TextBlock) -> ResumePoint | None:
+        """Where ``block`` resumes if it was ended early (self-paced text blocks only), else
+        None (it starts at its first prompt)."""
+        point = self._resume.get(id(block))
+        return point if point is not None and point.block is block else None
+
+    def _note_resume(self, block: TextBlock, completed: bool, resume_index: int,
+                     npz_path: str) -> None:  # fmt: skip
+        """A text block's run was saved: remember where it resumes, or forget it once done."""
+        if completed or block.mode == TIMED or block.is_calibration:
+            self._resume.pop(id(block), None)
+        else:
+            self._resume[id(block)] = ResumePoint(block, resume_index, Path(npz_path).stem)
 
     def _block_conditions(self, block: Sequence | TextBlock) -> dict[str, str]:
         """The session conditions ``block`` uses, with their values."""
@@ -438,6 +498,20 @@ class TaskWindow(QtWidgets.QMainWindow):
         self._tick()
 
     def _start_text_block(self, path: Path, block: TextBlock, extra: dict) -> None:
+        resume = self.resume_point(block)
+        start = resume.resume_index if resume is not None else 0
+        if resume is not None:
+            extra = {**extra, "text_resumed_trial": resume.last_trial}
+
+        def runner() -> SelfPacedRunner:
+            return SelfPacedRunner(block, self.countdown_s, self.go_debounce_s,
+                                   start_index=start, conditions=self._conditions_line(block),
+                                   host_ns=self._host_ns)  # fmt: skip
+
+        # Built once before the trial starts, so a bad start index or setting raises with no
+        # trial open, and again after it, so the block starts (its first preview, a timed
+        # block's schedule) once recording has begun
+        runner()
         self.session.start_trial(
             label=block.name,
             task=TASK,
@@ -450,11 +524,10 @@ class TaskWindow(QtWidgets.QMainWindow):
             countdown_s=self.countdown_s,
             go_debounce_s=self.go_debounce_s,
             sync_patch=self.sync_patch,
+            text_resume_from=start,
             **extra,
         )
-        self._runner = SelfPacedRunner(block, self.countdown_s, self.go_debounce_s,
-                                       conditions=self._conditions_line(block),
-                                       host_ns=self._host_ns)  # fmt: skip
+        self._runner = runner()
         self._t0_ns = self._runner.start_ns  # block_start_host_ns
         self._finish_at_ns = None
         self._close_after = False
@@ -521,11 +594,13 @@ class TaskWindow(QtWidgets.QMainWindow):
         self._after_block(result, seq, completed)
 
     def _end_text_block(self, elapsed: float) -> None:
+        runner = self._runner
         arrays, completed = self._text_arrays()
         block = self.sequence
         self._plugins("block_ending", block, arrays)
         result = self.session.end_trial(arrays=arrays, completed=completed,
                                         elapsed_s=round(elapsed, 3))  # fmt: skip
+        self._note_resume(block, completed, runner.resume_index(), result.npz_path)
         self._after_block(result, block, completed)
         if self._close_after:
             self._close_after = False

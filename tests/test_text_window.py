@@ -231,9 +231,9 @@ def test_enter_ends_early_and_the_block_stays_current(tmp_path):
         assert not win.running and win.current == 0 and win.completed == set()
         assert win.markers[-2:] == ["text|go|1|tuna_can:TIM", "text|end|1"]
         assert win.prompter.text_view is None
-        # Shift starts the block again at prompt 1 (no resume yet)
+        # Shift resumes the block at the prompt after the last "ok" one (step 6c)
         _key(win, Qt.Key_Shift)
-        assert win.running and win.prompter.text_view.index == 0
+        assert win.running and win.prompter.text_view.index == 1
         _key(win, Qt.Key_E)
         assert not win.running and win.current == 0
     recs = _records(tmp_path)
@@ -241,7 +241,7 @@ def test_enter_ends_early_and_the_block_stays_current(tmp_path):
     data = np.load(recs[0]["npz_path"])
     assert data["text_status"].tolist() == ["ok", "incomplete"]
     assert data["text_end_reason"].tolist() == ["operator", "block_end"]
-    assert np.load(recs[1]["npz_path"])["text_prompt_index"].tolist() == [0]
+    assert np.load(recs[1]["npz_path"])["text_prompt_index"].tolist() == [1]
 
 
 def test_esc_after_the_last_end_saves_complete_then_quits(tmp_path):
@@ -693,3 +693,226 @@ def test_only_text_mode_overlays_draw_on_text_blocks(tmp_path):
         text_ov.calls.clear()
         w.grab()  # a lane block: both drawn
         assert lane_ov.calls == text_ov.calls == [("under", False, None), ("over", False, None)]
+
+
+# ---- resume: an early-ended block starts again where it stopped ----
+
+
+def _stem(rec: dict) -> str:
+    return os.path.splitext(os.path.basename(rec["npz_path"]))[0]
+
+
+def _resume_meta(rec: dict) -> tuple:
+    meta = rec["metadata"]
+    return meta["completed"], meta["text_resume_from"], meta.get("text_resumed_trial")
+
+
+def _go_and_end_early(win: TaskWindow, clock: Clock) -> None:
+    """Start the previewed prompt's countdown, reach Go, then Enter: the block ends early."""
+    clock.advance(1.5)
+    _key(win, Qt.Key_Space)
+    _wait(win, clock, 3.0)
+    assert win.prompter.text_view.phase == GO
+    _key(win, Qt.Key_Enter)
+    assert not win.running
+
+
+def test_a_resumed_block_chains_its_trials_until_it_completes(tmp_path):
+    clock = Clock()
+    block, nxt = _grasp_block(n=3), _grasp_block("ball", n=1)
+    with _window(tmp_path, [block, nxt], clock) as win:
+        assert "3 prompts, about" in win.prompter.message and "Resumes" not in win.prompter.message
+        win.start_block()  # run 1: prompt 0 ok, ended early during prompt 1
+        _do_prompt(win, clock)
+        _go_and_end_early(win, clock)
+        assert win.current == 0 and win.resume_point(block).resume_index == 1
+        msg = win.prompter.message
+        assert "Resumes at prompt 2 of 3\n2 prompts left, about 1 min" in msg
+        assert "already done" not in msg
+        _key(win, Qt.Key_Shift)  # run 2: starts at prompt 1, ended early with no new "ok"
+        assert win.running and win.prompter.text_view.index == 1
+        assert win.prompter.text_view.total == 3
+        _go_and_end_early(win, clock)
+        assert win.resume_point(block).resume_index == 1  # unchanged
+        assert "Resumes at prompt 2 of 3" in win.prompter.message
+        _key(win, Qt.Key_Shift)  # run 3: from prompt 1 again, to the end
+        assert win.prompter.text_view.index == 1
+        _do_prompt(win, clock)
+        _do_prompt(win, clock)
+        clock.advance(1.5)
+        _key(win, Qt.Key_Space)
+        _wait(win, clock, TAIL_S)
+        assert not win.running and win.completed == {0} and win.current == 1
+        assert win.resume_point(block) is None and not win._resume  # dropped once complete
+    recs = _records(tmp_path)
+    first, second, third = (_stem(r) for r in recs)
+    assert [_resume_meta(r) for r in recs] == [
+        (False, 0, None), (False, 1, first), (True, 1, second)
+    ]  # fmt: skip
+    assert "text_resumed_trial" not in recs[0]["metadata"]
+    # text_prompt_index is an index into the whole block; each trial holds its own attempts
+    indices = [np.load(r["npz_path"])["text_prompt_index"].tolist() for r in recs]
+    assert indices == [[0, 1], [1], [1, 2]]
+    assert np.load(recs[2]["npz_path"])["text_grasp"].tolist() == ["TIM", "AD"]
+    assert third.startswith("trial_")
+
+
+def test_a_done_block_redone_starts_at_its_first_prompt_and_can_resume(tmp_path):
+    clock = Clock()
+    block, nxt = _grasp_block(n=3), _grasp_block("ball", n=1)
+    with _window(tmp_path, [block, nxt], clock) as win:
+        win.start_block()  # ended early, then resumed to the end
+        _do_prompt(win, clock)
+        _go_and_end_early(win, clock)
+        win.start_block()
+        for _ in range(2):
+            _do_prompt(win, clock)
+        clock.advance(1.5)
+        _key(win, Qt.Key_Space)
+        _wait(win, clock, TAIL_S)
+        assert win.completed == {0} and win.current == 1
+        _key(win, Qt.Key_Left)  # redo the done block: from its first prompt
+        msg = win.prompter.message
+        assert "(already done)" in msg and "3 prompts, about" in msg and "resumes" not in msg
+        _key(win, Qt.Key_Shift)
+        assert win.running and win.prompter.text_view.index == 0
+        _do_prompt(win, clock)
+        _do_prompt(win, clock)
+        _go_and_end_early(win, clock)  # the redo ended early at prompt 2
+        msg = win.prompter.message
+        assert "Done before; redo resumes at prompt 3 of 3\n1 prompt left, about" in msg
+        assert "(already done)" not in msg and win.completed == {0}
+        _key(win, Qt.Key_Shift)
+        assert win.running and win.prompter.text_view.index == 2
+        _key(win, Qt.Key_Enter)
+    recs = _records(tmp_path)
+    assert [_resume_meta(r)[:2] for r in recs] == [(False, 0), (True, 1), (False, 0), (False, 2)]
+    assert "text_resumed_trial" not in recs[2]["metadata"]  # the redo is a fresh run
+    assert recs[3]["metadata"]["text_resumed_trial"] == _stem(recs[2])
+
+
+def test_a_calibration_due_before_a_resume_keeps_the_resume_point(tmp_path):
+    clock = Clock()
+    block = _grasp_block(n=3)
+    with _window(tmp_path, [block, _lane("a")], clock, recalibrate_s=[600, 1200]) as win:
+        now = _session_clock(win)
+        assert _run(win, clock, now, 0) == GRASP_CALIBRATION and win.sequence is block
+        now[0] = 10
+        win.start_block()
+        _do_prompt(win, clock)
+        _go_and_end_early(win, clock)
+        assert win.current == 1 and win.resume_point(block).resume_index == 1
+        # 700 s after the calibration: Shift puts one in before the block (index 1 -> 2)
+        now[0] = 700
+        _key(win, Qt.Key_Shift)
+        assert not win.running and win.sequence.task_set == GRASP_CALIBRATION
+        assert win.sequences[2][1] is block and win.current == 1
+        win.start_block()  # that calibration ended early: no resume point
+        _wait(win, clock, 2.0)
+        _key(win, Qt.Key_Return)
+        assert win.resume_point(win.sequence) is None and list(win._resume) == [id(block)]
+        _key(win, Qt.Key_Right)  # Shift on the block: the calibration is taken out, put back
+        _key(win, Qt.Key_Shift)
+        assert not win.running and win.sequence.task_set == GRASP_CALIBRATION
+        assert _grasp_calibrations(win) == [0, 1] and win.sequences[2][1] is block
+        cal = win.sequence
+        win.start_block()
+        assert win._runner.start_index == 0  # a calibration never resumes
+        win.end_block(completed=False)
+        win.start_block()
+        _wait(win, clock, cal.duration_s)
+        _wait(win, clock, TAIL_S)
+        assert not win.running and win.sequence is block and list(win._resume) == [id(block)]
+        assert "Resumes at prompt 2 of 3" in win.prompter.message
+        win.start_block()  # resumes at prompt 2, not prompt 1
+        assert win.running and win.prompter.text_view.index == 1
+    recs = _records(tmp_path)
+    assert [r["metadata"]["task_set"] for r in recs] == ["grasp_calibration", "grasp"] + [
+        "grasp_calibration"] * 3 + ["grasp"]  # fmt: skip
+    assert [_resume_meta(r)[1:] for r in recs] == [
+        (0, None), (0, None), (0, None), (0, None), (0, None), (1, _stem(recs[1]))
+    ]  # fmt: skip
+
+
+def test_an_ended_early_grasp_calibration_restarts_at_its_first_prompt(tmp_path):
+    clock = Clock()
+    cal = grasp_calibration_block()
+    with _window(tmp_path, [cal, _grasp_block()], clock) as win:
+        win.start_block()
+        _wait(win, clock, cal.prompts[1].offset_s + 0.1)  # two grasps done
+        _key(win, Qt.Key_Return)
+        assert not win.running and win.current == 0 and not win._resume
+        assert "Resumes" not in win.prompter.message
+        win.start_block()
+        assert win.running and win._runner.start_index == 0
+        _wait(win, clock, cal.prompts[0].onset_s)
+        assert win.prompter.text_view.phase == GO and win.prompter.text_view.index == 0
+        _key(win, Qt.Key_Return)
+    recs = _records(tmp_path)
+    assert [_resume_meta(r) for r in recs] == [(False, 0, None), (False, 0, None)]
+
+
+def test_a_pair_block_resumes_at_tighten_after_loosen(tmp_path):
+    clock = Clock()
+    prompts = [
+        TextPrompt(f"Jar lid\n{s.capitalize()}", "jar", "Power", "top", None, s, None, "hand")
+        for s in ("loosen", "tighten")
+    ]
+    block = TextBlock("jar", "natural", "self_paced", prompts, {"object_name": "Jar"})
+    with _window(tmp_path, [block], clock) as win:
+        win.start_block()
+        _do_prompt(win, clock)  # loosen ok, then Enter in tighten's preview
+        assert win.prompter.text_view.phase == PREVIEW
+        _key(win, Qt.Key_Enter)
+        assert not win.running and "Resumes at prompt 2 of 2" in win.prompter.message
+        win.start_block()
+        view = win.prompter.text_view
+        assert view.index == 1 and view.prompt.step == "tighten"
+        _do_prompt(win, clock)
+        clock.advance(1.5)
+        _key(win, Qt.Key_Space)
+        _wait(win, clock, TAIL_S)
+        assert not win.running and win.completed == {0} and not win._resume
+    recs = _records(tmp_path)
+    assert [_resume_meta(r) for r in recs] == [(False, 0, None), (True, 1, _stem(recs[0]))]
+    first = np.load(recs[0]["npz_path"])
+    assert first["text_step"].tolist() == ["loosen", "tighten"]  # tighten only previewed
+    assert first["text_status"].tolist() == ["ok", "incomplete"]
+    second = np.load(recs[1]["npz_path"])
+    assert second["text_step"].tolist() == ["tighten"]
+    assert second["text_prompt_index"].tolist() == [1]
+
+
+def test_all_blocks_done_names_a_redo_that_was_ended_early(tmp_path):
+    clock = Clock()
+    block = _grasp_block(n=3)
+    with _window(tmp_path, [block], clock) as win:
+        _run(win, clock, [0.0], 0)
+        assert win.completed == {0} and "All blocks done.\nEsc to quit" in win.prompter.message
+        win.start_block()  # the redo, ended early after one "ok"
+        _do_prompt(win, clock)
+        _go_and_end_early(win, clock)
+        msg = win.prompter.message
+        assert msg.startswith("All blocks done.\ntuna_can: Done before; redo resumes at "
+                              "prompt 2 of 3, Shift to go on.\nEsc to quit")  # fmt: skip
+        win.start_block()
+        assert win.running and win.prompter.text_view.index == 1
+
+
+def test_a_runner_that_cannot_start_leaves_no_trial_open(tmp_path, monkeypatch):
+    clock = Clock()
+    with _window(tmp_path, [_grasp_block()], clock) as win:
+
+        def bad_runner(*args, **kw):
+            raise ValueError("bad start index")
+
+        monkeypatch.setattr(app, "SelfPacedRunner", bad_runner)
+        with pytest.raises(ValueError, match="bad start index"):
+            win.start_block()
+        assert not win.running and win._runner is None
+        assert not win.session.in_trial  # no trial was started
+        monkeypatch.undo()
+        win.start_block()  # still startable
+        assert win.running and win.prompter.text_view.index == 0
+        _key(win, Qt.Key_Return)
+    assert len(_records(tmp_path)) == 1
