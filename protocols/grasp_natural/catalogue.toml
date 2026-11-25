@@ -22,6 +22,12 @@
 # variant's steps always run one after the other, in the order listed (e.g. loosen, then
 # tighten the same fastener). est_s is the estimated time of one step; fixed_s makes a step
 # run for a fixed time (and is its estimate when est_s is not given).
+#
+# Grasp calibration: a timed block of brief maximum grasps (by default thumb-index,
+# thumb-index-middle and all fingertips on a hardcover book, then power on a ball). An optional
+# [calibration] table overrides its defaults: rest_s, hold_s, gap_s, swap_gap_s (added to the
+# gap where the next maximum is on another object), and [[calibration.maxima]] entries, each
+# with grasp, object (an id) and text. The generator copies it into every block.
 
 [catalogue]
 name = "grasp_natural"

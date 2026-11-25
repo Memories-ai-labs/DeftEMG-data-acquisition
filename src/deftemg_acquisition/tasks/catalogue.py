@@ -20,6 +20,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from .sequence import DIGITS
+from .textblock import CALIBRATION_KEYS, HAND, calibration_settings
 
 _ID = re.compile(r"[A-Za-z0-9_-]+")  # ids also name block files
 VARIANT = "{variant}"  # replaced by the variant's name in natural-task texts
@@ -347,6 +348,39 @@ def _natural(i: int, d) -> NaturalTask:
     return NaturalTask(tid, _id(d["group"], f"{where}.group"), est, steps, tuple(variants), fixed)
 
 
+def _maximum(i: int, m, cat: Catalogue):
+    """One ``[[calibration.maxima]]`` entry: its grasp is a grasp type of the catalogue, whose
+    highlight it gets, and its object an id. A table it can't check is returned as it is, for
+    ``calibration_settings`` to reject."""
+    if not isinstance(m, dict):
+        return m
+    where = f"calibration.maxima[{i}]"
+    if "highlight" in m:
+        raise CatalogueError(f"{where}: unknown key(s) highlight (it comes from the grasp type)")
+    m = dict(m)
+    if "object" in m:
+        _id(m["object"], f"{where}.object")
+    if "grasp" in m:
+        _known([_id(m["grasp"], f"{where}.grasp")], cat.grasps, f"{where}.grasp", "grasp type")
+        highlight = cat.grasps[m["grasp"]].highlight
+        m["highlight"] = highlight if highlight == HAND else list(highlight)
+    return m
+
+
+def _calibration(d, cat: Catalogue) -> dict:
+    """The optional ``[calibration]`` table: overrides of the grasp calibration's defaults
+    (``textblock.CALIBRATION_DEFAULTS``), checked, with each maximum given its grasp type's
+    highlight. Only the keys given are kept; the generator embeds them in each block."""
+    d = dict(_table(d, "calibration", optional=CALIBRATION_KEYS))
+    if isinstance(d.get("maxima"), list):
+        d["maxima"] = [_maximum(i, m, cat) for i, m in enumerate(d["maxima"])]
+    try:
+        calibration_settings(d)  # the rest: types, missing keys, numbers and texts
+    except ValueError as e:
+        raise CatalogueError(str(e)) from None
+    return d
+
+
 def parse_catalogue(data: dict, sha256: str = "") -> Catalogue:
     """A catalogue from the file's parsed contents, checked: unknown or missing keys, unknown
     names (grasp types, approaches, variations, conditions, steps), duplicate ids, and objects
@@ -390,12 +424,8 @@ def parse_catalogue(data: dict, sha256: str = "") -> Catalogue:
         conditions[_id(c, f"conditions.{c}")] = Condition(
             c, _str(v["ask"], f"conditions.{c}.ask"), choices
         )
-    calibration = d.get("calibration", {})
-    if not isinstance(calibration, dict):
-        raise CatalogueError(f"calibration: expected a table, got {calibration!r}")
-    cat = Catalogue(
-        name, timing, grasps, variations, approaches, conditions, [], [], calibration, sha256
-    )
+    cat = Catalogue(name, timing, grasps, variations, approaches, conditions, [], [], {}, sha256)
+    cat.calibration = _calibration(d.get("calibration", {}), cat)
     if not isinstance(d["objects"], list):
         raise CatalogueError("objects: expected a list of tables")
     cat.objects = [_object(i, o, cat) for i, o in enumerate(d["objects"])]
