@@ -21,6 +21,8 @@ recorder also subscribes to the ``LIVE_STREAMS`` the glove offers, for the viewe
 """
 
 import logging
+import mmap
+import operator
 import os
 import threading
 from collections.abc import Callable, Iterable
@@ -126,31 +128,98 @@ TOPICS = (
 )
 
 
+CHUNK_FRAMES = 3600  # rows per buffer chunk: 30 s at the glove's 120 Hz
+
+
+def _int64(value: Any) -> np.int64:
+    """A header value as stored in the trial's int64 arrays; raises if it can't be one.
+
+    Converted inside a list, as each value was when the trial's values were kept in lists: a
+    numpy scalar out of int64's range raises there (as an array or a bare scalar it would
+    wrap)."""
+    a = np.asarray([value], dtype=np.int64)
+    if a.shape != (1,):
+        raise ValueError(f"not a single integer: {value!r}")
+    return a[0]
+
+
+def _empty_chunk(shape: tuple[int, ...], dtype: type) -> np.ndarray:
+    """An uninitialised array in its own anonymous memory map: its pages are taken only as
+    rows are written, and go back to the system as soon as the array is freed (memory freed
+    by ``malloc`` may stay with the process, so copying the chunks out at ``stop`` would hold
+    the data twice)."""
+    nbytes = int(np.prod(shape)) * np.dtype(dtype).itemsize
+    if not nbytes:
+        return np.empty(shape, dtype)
+    if os.name == "nt":
+        memory = mmap.mmap(-1, nbytes)
+    else:  # an anonymous map is shared by default, and would be shared with any child process
+        memory = mmap.mmap(-1, nbytes, flags=mmap.MAP_PRIVATE)
+    return np.frombuffer(memory, dtype).reshape(shape)
+
+
+def _gather(chunks: list[Any], keep: np.ndarray, n_keep: int, chunk_frames: int) -> np.ndarray:
+    """The kept rows of one array's chunks, as one array of exactly ``n_keep`` rows. Each chunk
+    is freed (its list entry set to None) once copied, so the copy needs about one chunk more
+    than the data."""
+    out = np.empty((n_keep, *chunks[0].shape[1:]), chunks[0].dtype)
+    pos = 0
+    for j in range(len(chunks)):
+        rows = keep[j * chunk_frames : (j + 1) * chunk_frames]
+        k = int(np.count_nonzero(rows))
+        if k == len(rows):
+            out[pos : pos + k] = chunks[j][:k]
+        elif k:
+            np.compress(rows, chunks[j][: len(rows)], axis=0, out=out[pos : pos + k])
+        pos += k
+        chunks[j] = None
+    return out
+
+
 class StreamBuffer:
     """One stream's frames during a trial. ``add`` runs on the SDK's callback thread.
 
+    Each array (host times, header times and sequence numbers, and every field) is kept in
+    chunks of ``chunk_frames`` rows, allocated as needed (``_empty_chunk``) and filled in
+    place, so a trial holds about its data's size in memory. ``stop`` copies the kept rows into
+    arrays of their exact size, freeing each chunk as it goes, without holding up ``add``.
+
     A frame whose shape differs from the trial's first frame fails the stream for that trial:
-    its frames are freed, later ones are not kept, and ``stop`` raises."""
+    its frames are freed, later ones are not kept, and ``stop`` raises. A frame that can't be
+    converted, whose header ``seq`` or ``timestamp_us`` is not an int64, or that can't be
+    stored (no memory for a chunk; a host time that is not an int64), is dropped and counted in
+    ``n_errors``."""
 
     def __init__(
-        self, name: str, convert: Callable[[Any], dict[str, Any]], topic: str | None = None
+        self,
+        name: str,
+        convert: Callable[[Any], dict[str, Any]],
+        topic: str | None = None,
+        chunk_frames: int = CHUNK_FRAMES,
     ):
+        chunk_frames = operator.index(chunk_frames)  # a whole number of rows, not 4.0
+        if chunk_frames < 1:
+            raise ValueError(f"chunk_frames must be at least 1, not {chunk_frames}")
         self.name = name
         self.topic = topic or name  # the STREAMS name, e.g. "tactile" for "left_tactile"
         self.convert = convert
+        self.chunk_frames = chunk_frames
         self._lock = threading.Lock()
         self._recording = False
         self._start_ns = 0
         self._clear()
         self.n_received = 0  # whole session
         self.n_errors = 0  # frames that could not be converted, and SDK errors
+        self._logged: set[str] = set()  # the kinds of dropped frame logged (the first of each)
         self.last_ns = 0  # host time of the last frame, in a trial or not (0: none yet)
 
     def _clear(self) -> None:
-        self._host: list[int] = []
-        self._dev: list[int] = []
-        self._seq: list[int] = []
-        self._fields: dict[str, list[np.ndarray]] = {}
+        # chunks of each array; a row counts once all of its arrays are written (_n)
+        self._host: list[np.ndarray] = []
+        self._dev: list[np.ndarray] = []
+        self._seq: list[np.ndarray] = []
+        self._fields: dict[str, list[np.ndarray]] = {}  # in the trial's first frame's order
+        self._n = 0
         self._shapes: dict[str, tuple[int, ...]] | None = None  # the trial's first frame
         self._failed: str | None = None
 
@@ -159,6 +228,12 @@ class StreamBuffer:
             self._clear()
             self._start_ns = host_start_ns
             self._recording = True
+
+    def _drop(self, what: str) -> None:
+        self.n_errors += 1
+        if what not in self._logged:
+            self._logged.add(what)
+            log.exception("glove %s: could not %s", self.name, what)
 
     def add(self, frame: Any, t_ns: int) -> None:
         with self._lock:
@@ -170,9 +245,7 @@ class StreamBuffer:
                 fields = self.convert(frame)
                 values = {key: np.asarray(value, dtype=np.float32) for key, value in fields.items()}
             except Exception:
-                self.n_errors += 1
-                if self.n_errors == 1:
-                    log.exception("glove %s: could not convert a frame", self.name)
+                self._drop("convert a frame")
                 return
             shapes = {key: array.shape for key, array in values.items()}
             if self._shapes is None:
@@ -183,12 +256,37 @@ class StreamBuffer:
                 self._clear()
                 self._failed = failed
                 return
-            header = frame.header
-            self._host.append(t_ns)
-            self._dev.append(header.timestamp_us)
-            self._seq.append(header.seq)
-            for key, array in values.items():
-                self._fields.setdefault(key, []).append(array)
+            try:  # before any write: a bad header drops the frame, not the trial
+                header = frame.header
+                dev, seq = _int64(header.timestamp_us), _int64(header.seq)
+            except Exception:
+                self._drop("read a frame's header")
+                return
+            try:  # a row counts only once all of its arrays are written
+                chunk, row = divmod(self._n, self.chunk_frames)
+                if chunk == len(self._host):  # allocate every array's next chunk, then keep them
+                    rows = self.chunk_frames
+                    host_chunk, dev_chunk, seq_chunk = (
+                        _empty_chunk((rows,), np.int64) for _ in range(3)
+                    )
+                    field_chunks = {
+                        key: _empty_chunk((rows, *shape), np.float32)
+                        for key, shape in self._shapes.items()
+                    }
+                    self._host.append(host_chunk)
+                    self._dev.append(dev_chunk)
+                    self._seq.append(seq_chunk)
+                    for key, array in field_chunks.items():
+                        self._fields.setdefault(key, []).append(array)
+                self._host[chunk][row] = t_ns
+                self._dev[chunk][row] = dev
+                self._seq[chunk][row] = seq
+                for key, array in values.items():
+                    self._fields[key][chunk][row] = array
+            except Exception:
+                self._drop("store a frame")
+                return
+            self._n += 1  # the row is complete
 
     def error(self, message: str) -> None:
         with self._lock:
@@ -197,35 +295,50 @@ class StreamBuffer:
 
     def stop(self, host_end_ns: int) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
         """End the trial: arrays of the frames that arrived in [start, end] and a summary."""
-        with self._lock:
+        with self._lock:  # hand the chunks over; the copy runs without the lock
             self._recording = False
-            try:
-                if self._failed:
-                    raise ValueError(self._failed)
-                return self._arrays(host_end_ns)
-            finally:
-                self._clear()
+            failed, n, start_ns, n_errors = self._failed, self._n, self._start_ns, self.n_errors
+            host_chunks = list(self._host)  # which rows to keep, whatever the fields are named
+            columns: dict[str, list[Any]] = {
+                "host_ns": self._host,
+                "dev_us": self._dev,
+                "seq": self._seq,
+            }
+            if n:  # (a field's chunks may exist with no rows: a frame that failed to store)
+                columns.update(self._fields)
+            self._clear()
+        if failed:
+            raise ValueError(failed)
+        host = np.concatenate(host_chunks)[:n] if n else np.empty(0, np.int64)
+        del host_chunks
+        return self._arrays(columns, host, n, start_ns, host_end_ns, n_errors)
 
-    def _arrays(self, host_end_ns: int) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
-        host = np.asarray(self._host, dtype=np.int64)
-        keep = (host >= self._start_ns) & (host <= host_end_ns)
-        arrays = {
-            f"{self.name}_host_ns": host[keep],
-            f"{self.name}_dev_us": np.asarray(self._dev, dtype=np.int64)[keep],
-            f"{self.name}_seq": np.asarray(self._seq, dtype=np.int64)[keep],
-        }
-        for key, values in self._fields.items():
-            arrays[f"{self.name}_{key}"] = np.stack(values)[keep]
-        n = int(keep.sum())
-        span_s = (host_end_ns - self._start_ns) / 1e9
+    def _arrays(
+        self,
+        columns: dict[str, list[Any]],
+        host: np.ndarray,
+        n: int,
+        start_ns: int,
+        host_end_ns: int,
+        n_errors: int,
+    ) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+        keep = (host >= start_ns) & (host <= host_end_ns)
+        n_keep = int(np.count_nonzero(keep))
+        del host
+        arrays = {}
+        for key, chunks in columns.items():
+            arrays[f"{self.name}_{key}"] = (
+                _gather(chunks, keep, n_keep, self.chunk_frames) if n else np.empty(0, np.int64)
+            )
+        span_s = (host_end_ns - start_ns) / 1e9
         gaps = np.diff(arrays[f"{self.name}_host_ns"]) / 1e9
         seq = arrays[f"{self.name}_seq"]
         summary = {
-            "n_frames": n,
-            "rate_hz": round(n / span_s, 1) if span_s > 0 else 0.0,
+            "n_frames": n_keep,
+            "rate_hz": round(n_keep / span_s, 1) if span_s > 0 else 0.0,
             "max_gap_s": round(float(gaps.max()), 4) if len(gaps) else None,
-            "n_seq_skipped": int(np.clip(np.diff(seq) - 1, 0, None).sum()) if n > 1 else 0,
-            "n_errors": self.n_errors,
+            "n_seq_skipped": int(np.clip(np.diff(seq) - 1, 0, None).sum()) if n_keep > 1 else 0,
+            "n_errors": n_errors,
         }
         return arrays, summary
 
