@@ -42,7 +42,7 @@ from deftemg_acquisition.tasks.selfpaced import (
     text_view_at,
 )
 from deftemg_acquisition.tasks.sequence import Prompt, Sequence
-from deftemg_acquisition.tasks.textblock import COUNTDOWN_S, HAND, TextBlock
+from deftemg_acquisition.tasks.textblock import COUNTDOWN_S, HAND, TextBlock, conditions_line
 from deftemg_acquisition.viz.gpu_traces import make_trace_plot
 from deftemg_acquisition.viz.panels import (
     BandRms,
@@ -213,7 +213,9 @@ def load_trial(npz_path: Path) -> ReplayData:
 
 
 def _text_replay(trial: trials.Trial, meta: dict, t0_ns: int) -> TextReplay:
-    conditions = ", ".join(f"{k} = {v}" for k, v in (meta.get("conditions") or {}).items())
+    block = TextBlock.from_dict(meta["sequence"])
+    # as the live screen showed them (its labels are in the saved block's params)
+    conditions = conditions_line(block, meta.get("conditions") or {})
     attempts = attempts_from_arrays(trial.arrays)
     # Go as it was drawn, where logged, so the view turns to Go with its mark (a timed block's
     # view follows its schedule instead)
@@ -221,7 +223,7 @@ def _text_replay(trial: trials.Trial, meta: dict, t0_ns: int) -> TextReplay:
         if a.go_ns >= 0 and painted >= 0:
             a.go_ns = painted
     return TextReplay(
-        block=TextBlock.from_dict(meta["sequence"]),
+        block=block,
         attempts=attempts,
         t0_ns=t0_ns,
         start_ns=trial.text_prompts.block_start_ns,

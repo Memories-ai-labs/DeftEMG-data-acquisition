@@ -379,6 +379,32 @@ def test_terms_are_optional(data):
     assert parse_catalogue(data).terms == []
 
 
+def test_shipped_condition_labels_and_group_tasks(cat):
+    assert {c.id: c.label for c in cat.conditions.values()} == {
+        "bottle_fill_rubber": "Rubber bottle",
+        "bottle_fill_metal": "Metal/plastic bottle",
+    }
+    groups = {t.group for t in cat.natural}
+    assert set(cat.natural_groups) == groups  # every group has its task line
+    assert {g: s.task for g, s in cat.natural_groups.items()} == {
+        "pages": "open the book and turn pages",
+        "containers": "open and close each container, drink from each mug",
+        "screw_panel": "loosen, then tighten each fastener",
+        "usb": "insert, then remove each plug",
+        "grip": "squeeze each grip tool once",
+    }
+
+
+def test_condition_labels_and_group_tasks_are_optional(data):
+    del data["conditions"]["bottle_fill_metal"]["label"]
+    data["natural_groups"].pop("grip")
+    cat = parse_catalogue(data)
+    assert cat.conditions["bottle_fill_metal"].label == ""
+    assert "grip" not in cat.natural_groups and "usb" in cat.natural_groups
+    del data["natural_groups"]
+    assert parse_catalogue(data).natural_groups == {}
+
+
 def _no_items(data):
     del data["natural"][0]["items"]
 
@@ -423,6 +449,34 @@ def _repeated_term(data):
         (lambda d: d["terms"][0].pop("text"), r"terms\[0\]: missing text"),
         (lambda d: d["terms"][0].update(note="x"), r"terms\[0\]: unknown key\(s\) note"),
         (lambda d: d.update(terms={"term": "x", "text": "y"}), r"terms: expected a list"),
+        (lambda d: d["terms"][0].update(term="Light\ngrasp"), r"terms\[0\].term: expected one"),
+        (
+            lambda d: d["terms"][0].update(text="touch\nlightly"),
+            r"terms 'Light grasp'.text: expected one line",
+        ),
+        (
+            lambda d: d["conditions"]["bottle_fill_metal"].update(label=" "),
+            r"conditions.bottle_fill_metal.label: expected a non-empty string",
+        ),
+        (
+            lambda d: d["conditions"]["bottle_fill_metal"].update(name="x"),
+            r"conditions.bottle_fill_metal: unknown key\(s\) name",
+        ),
+        (
+            lambda d: d["natural_groups"].update(pens={"task": "x"}),
+            r"natural_groups.pens: unknown group of the natural tasks 'pens'",
+        ),
+        (lambda d: d["natural_groups"]["usb"].pop("task"), r"natural_groups.usb: missing task"),
+        (
+            lambda d: d["natural_groups"]["usb"].update(task=""),
+            r"natural_groups.usb.task: expected a non-empty string",
+        ),
+        (
+            lambda d: d["natural_groups"]["usb"].update(text="x"),
+            r"natural_groups.usb: unknown key\(s\) text",
+        ),
+        (lambda d: d["natural_groups"].update(usb="x"), r"natural_groups.usb: expected a table"),
+        (lambda d: d.update(natural_groups=["usb"]), r"natural_groups: expected a table"),
     ],
 )
 def test_new_key_errors(data, edit, match):

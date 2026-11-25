@@ -72,6 +72,7 @@ class Condition:
     id: str
     ask: str
     choices: tuple[str, ...]
+    label: str = ""  # what the screens call it ("Rubber bottle: filled"); "" = the id
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,14 @@ class NaturalTask:
 
 
 @dataclass(frozen=True)
+class NaturalGroup:
+    """Optional settings of a natural block (a group of natural tasks)."""
+
+    id: str  # the group
+    task: str  # the start screen's task line ("open the book and turn pages")
+
+
+@dataclass(frozen=True)
 class Term:
     """A word used in the prompts and what it means, for the subject's terms slide."""
 
@@ -134,6 +143,7 @@ class Catalogue:
     calibration: dict = field(default_factory=dict)  # optional overrides, read by the blocks
     sha256: str = ""  # of the file it was loaded from
     terms: list[Term] = field(default_factory=list)  # in display order
+    natural_groups: dict[str, NaturalGroup] = field(default_factory=dict)  # group -> settings
 
 
 @dataclass(frozen=True)
@@ -210,6 +220,13 @@ def _mapping(d, where: str) -> dict:
 def _str(v, where: str) -> str:
     if not isinstance(v, str) or not v.strip():
         raise CatalogueError(f"{where}: expected a non-empty string, got {v!r}")
+    return v
+
+
+def _line(v, where: str) -> str:
+    """A non-empty string of one line (e.g. a term: the terms slide gives each one line)."""
+    if "\n" in _str(v, where):
+        raise CatalogueError(f"{where}: expected one line, got {v!r}")
     return v
 
 
@@ -405,11 +422,23 @@ def _terms(d) -> list[Term]:
     terms = []
     for i, t in enumerate(d):
         t = _table(t, f"terms[{i}]", ["term", "text"])
-        term = _str(t["term"], f"terms[{i}].term")
+        term = _line(t["term"], f"terms[{i}].term")
         if term in (x.term for x in terms):
             raise CatalogueError(f"terms: {term!r} is given twice")
-        terms.append(Term(term, _str(t["text"], f"terms {term!r}.text")))
+        terms.append(Term(term, _line(t["text"], f"terms {term!r}.text")))
     return terms
+
+
+def _natural_groups(d, groups) -> dict[str, NaturalGroup]:
+    """The optional ``[natural_groups.<group>]`` tables, each for a group of the natural tasks:
+    ``task``, the line its block's start screen shows after "Task: "."""
+    out = {}
+    for g, v in _mapping(d, "natural_groups").items():
+        where = f"natural_groups.{g}"
+        _known([_id(g, where)], groups, where, "group of the natural tasks")
+        v = _table(v, where, ["task"])
+        out[g] = NaturalGroup(g, _str(v["task"], f"{where}.task"))
+    return out
 
 
 def parse_catalogue(data: dict, sha256: str = "") -> Catalogue:
@@ -421,7 +450,15 @@ def parse_catalogue(data: dict, sha256: str = "") -> Catalogue:
         data,
         "catalogue file",
         top,
-        ["timing", "approaches", "conditions", "natural", "calibration", "terms"],
+        [
+            "timing",
+            "approaches",
+            "conditions",
+            "natural",
+            "natural_groups",
+            "calibration",
+            "terms",
+        ],
     )
     name = _str(_table(d["catalogue"], "catalogue", ["name"])["name"], "catalogue.name")
     timing_keys = [f.name for f in fields(Timing)]
@@ -456,12 +493,13 @@ def parse_catalogue(data: dict, sha256: str = "") -> Catalogue:
     }
     conditions = {}
     for c, v in _mapping(d.get("conditions", {}), "conditions").items():
-        v = _table(v, f"conditions.{c}", ["ask", "choices"])
+        v = _table(v, f"conditions.{c}", ["ask", "choices"], ["label"])
         choices = _strs(v["choices"], f"conditions.{c}.choices")
         if len(choices) < 2 or len(set(choices)) != len(choices):
             raise CatalogueError(f"conditions.{c}.choices: need two or more different choices")
+        label = _str(v["label"], f"conditions.{c}.label") if "label" in v else ""
         conditions[_id(c, f"conditions.{c}")] = Condition(
-            c, _str(v["ask"], f"conditions.{c}.ask"), choices
+            c, _str(v["ask"], f"conditions.{c}.ask"), choices, label
         )
     cat = Catalogue(name, timing, grasps, variations, approaches, conditions, [], [], {}, sha256)
     cat.calibration = _calibration(d.get("calibration", {}), cat)
@@ -475,6 +513,8 @@ def parse_catalogue(data: dict, sha256: str = "") -> Catalogue:
         raise CatalogueError("natural: expected a list of tables")
     cat.natural = [_natural(i, t) for i, t in enumerate(natural)]
     _unique([t.id for t in cat.natural], "natural")
+    groups = list(dict.fromkeys(t.group for t in cat.natural))
+    cat.natural_groups = _natural_groups(d.get("natural_groups", {}), groups)
     for obj in cat.objects:  # every object and approach has prompts, and every note is shown
         combinations = _combinations(cat, obj)
         for approach in obj.approaches or (None,):

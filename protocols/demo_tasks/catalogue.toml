@@ -75,6 +75,7 @@ top = "from the top"
 [conditions.mug_fill]
 ask = "Mug: filled or empty?"
 choices = ["filled", "empty"]
+label = "Mug"
 
 [[objects]]
 id = "tennis_ball"

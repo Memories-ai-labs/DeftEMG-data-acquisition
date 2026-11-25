@@ -116,10 +116,11 @@ def with_calibrations(blocks: Blocks, reps: int = CALIBRATION_REPS) -> Blocks:
 
 
 def condition_questions(blocks: Blocks) -> dict[str, dict | None]:
-    """The session conditions the blocks use: {name: {"ask", "choices"}} from the blocks'
-    ``params["condition_questions"]``, or None for one no block describes (any non-empty value
-    is then accepted). Exits if one is described badly (``condition_questions`` must be a table
-    of conditions) or two blocks describe the same condition differently."""
+    """The session conditions the blocks use: {name: {"ask", "choices"[, "label"]}} from the
+    blocks' ``params["condition_questions"]``, or None for one no block describes (any
+    non-empty value is then accepted). Exits if one is described badly (``condition_questions``
+    must be a table of conditions) or two blocks describe the same condition differently
+    (their labels included)."""
     out: dict[str, dict | None] = {}
     source: dict[str, Path] = {}
     for path, block in blocks:
@@ -136,7 +137,11 @@ def condition_questions(blocks: Blocks) -> dict[str, dict | None]:
             if not (isinstance(choices, list) and choices
                     and all(isinstance(c, str) and c for c in choices)):  # fmt: skip
                 sys.exit(f"{path}: condition_questions.{name}: need an ask and choices")
-            q = {"ask": q["ask"], "choices": choices}
+            label = q.get("label")
+            if label is not None and not (isinstance(label, str) and label.strip()):
+                sys.exit(f"{path}: condition_questions.{name}.label: expected a non-empty string")
+            # the label too: the screens show it, so blocks must agree on it
+            q = {"ask": q["ask"], "choices": choices, **({"label": label} if label else {})}
             if out[name] is None:
                 out[name], source[name] = q, path
             elif out[name] != q:

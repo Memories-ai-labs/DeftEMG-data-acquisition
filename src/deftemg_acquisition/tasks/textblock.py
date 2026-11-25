@@ -394,9 +394,36 @@ def check_start_and_terms(params: dict, where: str = "params") -> None:
             t = _keys(t, TERM_KEYS, f"{where}.terms[{i}]")
             for k in TERM_KEYS:
                 _string(t[k], f"{where}.terms[{i}].{k}")
+                if "\n" in t[k]:  # the terms slide gives each term one line
+                    raise ValueError(f"{where}.terms[{i}].{k}: expected one line, got {t[k]!r}")
             if t["term"] in seen:
                 raise ValueError(f"{where}.terms: {t['term']!r} is given twice")
             seen.add(t["term"])
+
+
+def condition_labels(block, names) -> dict[str, str | None]:
+    """Each of the condition ``names`` with its ``label`` from the block's
+    ``params["condition_questions"]`` (None without one: block files from before labels, or a
+    lane block)."""
+    questions = block.params.get("condition_questions")
+    questions = questions if isinstance(questions, dict) else {}
+    out = {}
+    for name in names:
+        q = questions.get(name)
+        label = q.get("label") if isinstance(q, dict) else None
+        out[name] = label if isinstance(label, str) and label.strip() else None
+    return out
+
+
+def conditions_line(block, conditions: dict[str, str]) -> str:
+    """The session ``conditions`` ({name: value}) a block uses, as its screens show them, live
+    and in replay: "Rubber bottle: filled" with the condition's label, else "bottle_fill =
+    filled"."""
+    labels = condition_labels(block, conditions)
+    return ", ".join(
+        f"{labels[name]}: {value}" if labels[name] else f"{name} = {value}"
+        for name, value in conditions.items()
+    )
 
 
 # ---- the grasp calibration ----

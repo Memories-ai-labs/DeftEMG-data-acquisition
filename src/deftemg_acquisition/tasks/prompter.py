@@ -294,6 +294,7 @@ class PrompterWidget(QtWidgets.QWidget):
         self._highlight_cache: tuple[tuple, tuple[QtCore.QPointF, QtGui.QPixmap]] | None = None
         self.header = ""
         self.message = ""  # large centred text, e.g. instructions between blocks
+        self.message_bold: dict[int, int] = {}  # see ``message``
         self.warning = ""  # a problem to fix now, on a band under the header, blocks or not
         self.show_effort = False  # the effort bar (and room for it under the target row)
         # (effort, prompted level) while running: effort None = no reading yet (empty bar),
@@ -330,6 +331,18 @@ class PrompterWidget(QtWidgets.QWidget):
         self.t0_perf = None
         self.t = None
         self.update()
+
+    @property
+    def message(self) -> str:
+        """Large centred text, e.g. instructions between blocks. Setting it clears
+        ``message_bold`` ({line index: leading characters drawn bold}, e.g. the terms slide's
+        terms), so only a message that sets it after itself has bold text."""
+        return self._message
+
+    @message.setter
+    def message(self, text: str) -> None:
+        self._message = text
+        self.message_bold = {}
 
     @property
     def text_mode(self) -> bool:
@@ -379,6 +392,46 @@ class PrompterWidget(QtWidgets.QWidget):
             hp.end()
             self._hand_image_cache = (key, (QtCore.QPointF(rect.topLeft()), image))
         return self._hand_image_cache[1]
+
+    def _message_document(self, font: QtGui.QFont, width: float) -> QtGui.QTextDocument:
+        """``message`` laid out as the plain path lays it out (centred lines, word-wrapped to
+        ``width``), with each line's first ``message_bold`` characters in bold."""
+        doc = QtGui.QTextDocument()
+        doc.setDocumentMargin(0)
+        doc.setDefaultFont(font)
+        option = QtGui.QTextOption(QtCore.Qt.AlignHCenter)
+        option.setWrapMode(QtGui.QTextOption.WordWrap)
+        doc.setDefaultTextOption(option)
+        doc.setTextWidth(width)
+        plain, bold = QtGui.QTextCharFormat(), QtGui.QTextCharFormat()
+        plain.setForeground(_qcolor(FOREGROUND))
+        bold.setForeground(_qcolor(FOREGROUND))
+        bold.setFontWeight(QtGui.QFont.Bold)
+        cursor = QtGui.QTextCursor(doc)
+        for i, line in enumerate(self.message.split("\n")):
+            if i:
+                cursor.insertBlock()
+            n = self.message_bold.get(i, 0)
+            cursor.insertText(line[:n], bold)
+            cursor.insertText(line[n:], plain)
+        return doc
+
+    def _draw_rich_message(self, p: QtGui.QPainter, area: QtCore.QRectF, font) -> None:
+        """``message`` with bold parts (``message_bold``): the largest size that fits ``area``,
+        centred on a backdrop that fits the text, as the plain path draws it."""
+        for size in range(20, 9, -1):  # smaller text until it fits a small window
+            font.setPointSizeF(font_points(size))
+            doc = self._message_document(font, area.width())
+            w, h = doc.idealWidth(), doc.size().height()
+            if h <= area.height() and w <= area.width():
+                break
+        top = area.top() + (area.height() - h) / 2
+        text = QtCore.QRectF(area.center().x() - w / 2, top, w, h)
+        p.fillRect(text.adjusted(-16, -12, 16, 12), _qcolor(BACKGROUND, 220))
+        p.save()
+        p.translate(area.left(), top)
+        doc.drawContents(p)
+        p.restore()
 
     def _highlight_image(
         self, lay: Layout, highlight: tuple[str, ...] | str, dpr: float
@@ -490,7 +543,10 @@ class PrompterWidget(QtWidgets.QWidget):
         p.setFont(font)
         p.drawText(QtCore.QRectF(16, 0, self.width() - 32, lay.header_h),
                    QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft, self.header)  # fmt: skip
-        if self.message:
+        if self.message and self.message_bold:
+            area = QtCore.QRectF(56, lay.header_h, self.width() - 112, lay.target_y - lay.header_h)
+            self._draw_rich_message(p, area, font)
+        elif self.message:
             area = QtCore.QRectF(56, lay.header_h, self.width() - 112, lay.target_y - lay.header_h)
             flags = QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap
             for size in range(20, 9, -1):  # smaller text until it fits a small window

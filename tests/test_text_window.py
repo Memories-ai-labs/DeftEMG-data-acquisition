@@ -4,6 +4,7 @@ patch, the grasp calibration, and the idle screen."""
 import json
 import os
 from contextlib import contextmanager
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -39,6 +40,7 @@ from deftemg_acquisition.tasks.textblock import (  # noqa: E402
 )
 
 Qt = QtCore.Qt
+ROOT = Path(__file__).resolve().parents[1]
 S = 1_000_000_000  # ns per s
 TAIL_S = 0.5
 
@@ -1106,6 +1108,7 @@ TERMS_SLIDE = (
     "Terms\n\nLight grasp: touch the object lightly\n\nPick up: lift the object off the table"
     "\n\nShift to go on"
 )
+TERMS_BOLD = {2: len("Light grasp"), 4: len("Pick up")}  # line index: leading characters
 
 
 def _start_block(name: str, task_set: str, n: int, est_s: float, set_out: list[str],
@@ -1121,7 +1124,8 @@ def _start_block(name: str, task_set: str, n: int, est_s: float, set_out: list[s
 
 def test_start_screens_are_one_line_per_item(tmp_path):
     """The grasp, natural and calibration start screens: one line per item with a blank line
-    between, no key instructions but Shift; an older block file keeps its older screen."""
+    between, no block name (the header has it) and no key instructions but Shift; a condition
+    without a label shows its name; an older block file keeps its older screen."""
     from deftemg_acquisition.tasks.textgen import GRASP_TASK, NATURAL_TASK
 
     grasp = _start_block("S01_b02_tuna_can", "grasp", 32, 9.0, ["Tuna can"], GRASP_TASK)
@@ -1130,14 +1134,16 @@ def test_start_screens_are_one_line_per_item(tmp_path):
     natural = _start_block("S01_b03_containers", "natural", 5, 16.0, items, NATURAL_TASK)
     blocks = [grasp, natural, grasp_calibration_block(), _grasp_block(n=2)]
     with _window(tmp_path, blocks, conditions={"bottle_fill_rubber": "filled"}) as win:
-        screens = []
+        screens, headers = [], []
         for _ in blocks:
             screens.append(win.prompter.message)
+            headers.append(win.prompter.header)
             _key(win, Qt.Key_Right)
         assert win.current == 0 and not win.showing_terms  # no terms: no slide
+    assert headers[:2] == ["Block 1/4: S01_b02_tuna_can   (0/4 blocks done)",
+                           "Block 2/4: S01_b03_containers   (0/4 blocks done)"]  # fmt: skip
     assert [s.split("\n\n") for s in screens[:3]] == [
         [
-            "S01_b02_tuna_can",
             "Set out: Tuna can",
             "Task: grasp as prompted, the hand shows which fingers",
             "32 prompts, about 9 min",
@@ -1145,14 +1151,12 @@ def test_start_screens_are_one_line_per_item(tmp_path):
             "Shift to start",
         ],
         [
-            "S01_b03_containers",
             "Set out:\nAquaphor tube\nMedium cream jar\nSmall coffee mug\nLarge coffee mug",
             "Task: do each task as written",
             "5 prompts, about 2 min",
             "Shift to start",
         ],
         [
-            "grasp_calibration",
             "Set out:\nHardcover book\nBall",
             "Task: brief maximum grasps, as hard as is comfortable",
             "Relax in between; swap objects when prompted",
@@ -1174,8 +1178,90 @@ def test_a_resumed_start_screen_names_where_it_resumes(tmp_path):
         _do_prompt(win, clock)
         _go_and_end_early(win, clock)
         assert win.prompter.message.split("\n\n") == [
-            "mugs", "Set out: Small coffee mug", "Task: grasp",
+            "Set out: Small coffee mug", "Task: grasp",
             "Resumes at prompt 2 of 3\n2 prompts left, about 1 min", "Shift to start",
+        ]  # fmt: skip
+
+
+def _labelled(block: TextBlock, labels: dict[str, str | None]) -> TextBlock:
+    """``block`` needing the conditions in ``labels``, each described with its label (None:
+    described as before labels)."""
+    block.params["conditions"] = list(labels)
+    block.params["condition_questions"] = {
+        name: {"ask": f"{name}?", "choices": ["filled", "empty"],
+               **({"label": label} if label is not None else {})}
+        for name, label in labels.items()
+    }  # fmt: skip
+    return block
+
+
+def test_conditions_show_their_labels_on_the_start_screen_and_during_the_block(tmp_path):
+    """A labelled condition reads "Rubber bottle: filled" (no "Conditions:", the label says
+    what it is), before and during the block; the metadata keeps the names."""
+    clock = Clock()
+    labels = {"bottle_fill_rubber": "Rubber bottle", "bottle_fill_metal": "Metal bottle"}
+    block = _labelled(_start_block("bottle", "grasp", 2, 9.0, ["Water bottle (rubber)"], "grasp"),
+                      labels)  # fmt: skip
+    conditions = {"bottle_fill_rubber": "filled", "bottle_fill_metal": "empty"}
+    with _window(tmp_path, [block], clock, conditions=conditions) as win:
+        assert win.prompter.message.split("\n\n") == [
+            "Set out: Water bottle (rubber)", "Task: grasp", "2 prompts, about 1 min",
+            "Rubber bottle: filled, Metal bottle: empty", "Shift to start",
+        ]  # fmt: skip
+        win.start_block()
+        assert win.prompter.text_view.conditions == "Rubber bottle: filled, Metal bottle: empty"
+        _key(win, Qt.Key_Enter)
+    assert _records(tmp_path)[0]["metadata"]["conditions"] == conditions
+
+
+@pytest.mark.parametrize(
+    "questions",
+    [
+        {"bottle_fill_rubber": None},  # described before labels
+        {"bottle_fill_rubber": "  "},  # a blank label
+        "not a table",  # described badly: the names, as before
+    ],
+)
+def test_a_condition_without_a_label_shows_its_name(tmp_path, questions):
+    block = _start_block("bottle", "grasp", 2, 9.0, ["Water bottle (rubber)"], "grasp")
+    if isinstance(questions, dict):
+        _labelled(block, questions)
+    else:
+        block.params["conditions"] = ["bottle_fill_rubber"]
+        block.params["condition_questions"] = questions
+    with _window(tmp_path, [block], conditions={"bottle_fill_rubber": "filled"}) as win:
+        assert "\n\nConditions: bottle_fill_rubber = filled\n\n" in win.prompter.message
+        win.start_block()
+        assert win.prompter.text_view.conditions == "bottle_fill_rubber = filled"
+        _key(win, Qt.Key_Enter)
+
+
+def test_some_conditions_without_a_label_keep_the_conditions_prefix(tmp_path):
+    block = _labelled(_start_block("bottle", "grasp", 2, 9.0, ["Bottle"], "grasp"),
+                      {"bottle_fill_rubber": "Rubber bottle", "lid": None})  # fmt: skip
+    with _window(tmp_path, [block], conditions={"bottle_fill_rubber": "filled", "lid": "on"}) as w:
+        assert "\n\nConditions: Rubber bottle: filled, lid = on\n\n" in w.prompter.message
+
+
+def test_a_done_start_screen_says_so_on_its_own_line(tmp_path):
+    """With no block-name line, "(already done)" is an item of its own, first."""
+    clock = Clock()
+    blocks = [_start_block("mugs", "grasp", 2, 9.0, ["Small coffee mug"], "grasp"),
+              _start_block("ball", "grasp", 1, 9.0, ["Ball"], "grasp")]  # fmt: skip
+    with _window(tmp_path, blocks, clock) as win:
+        win.start_block()
+        _do_prompt(win, clock)
+        _do_prompt(win, clock)
+        clock.advance(1.5)
+        _key(win, Qt.Key_Space)
+        _wait(win, clock, TAIL_S)
+        assert win.completed == {0} and win.current == 1
+        assert "already done" not in win.prompter.message
+        _key(win, Qt.Key_Left)
+        assert win.prompter.header == "Block 1/2: mugs   (1/2 blocks done)"
+        assert win.prompter.message.split("\n\n") == [
+            "(already done)", "Set out: Small coffee mug", "Task: grasp",
+            "2 prompts, about 1 min", "Shift to start",
         ]  # fmt: skip
 
 
@@ -1189,6 +1275,7 @@ def test_the_terms_slide_comes_first_and_t_shows_it_again(tmp_path):
               _start_block("mug", "grasp", 2, 9.0, ["Mug"], "grasp", TERMS[:1])]  # fmt: skip
     with _window(tmp_path, blocks, clock) as win:
         assert win.showing_terms and win.prompter.message == TERMS_SLIDE
+        assert win.prompter.message_bold == TERMS_BOLD  # each term, on its own line
         assert win.prompter.text_mode and win.prompter.header.startswith("Block 1/3: tuna_can")
         for key in (Qt.Key_Right, Qt.Key_Left, Qt.Key_T, Qt.Key_R, Qt.Key_A):
             _key(win, key)
@@ -1200,8 +1287,10 @@ def test_the_terms_slide_comes_first_and_t_shows_it_again(tmp_path):
             assert idle is None or win.prompter.message == idle
             idle = win.prompter.message
             assert idle.startswith("tuna_can\nPlace: Tuna can")  # the first block's own screen
+            assert win.prompter.message_bold == {}  # nothing bold left over
             _key(win, Qt.Key_T)
             assert win.showing_terms and win.prompter.message == TERMS_SLIDE
+            assert win.prompter.message_bold == TERMS_BOLD
         _key(win, Qt.Key_Space)
         _key(win, Qt.Key_Shift)  # now Shift starts the block
         assert win.running and win.prompter.text_view.phase == PREVIEW
@@ -1258,3 +1347,53 @@ def test_esc_or_q_on_the_terms_slide_quits_without_recording(tmp_path):
 def test_a_lane_blocks_start_screen_is_unchanged(tmp_path):
     with _window(tmp_path, [_lane("a")]) as win:  # 0.5 s of presses + the 0.5 s tail
         assert win.prompter.message == "a\n1 presses, 1 s\n\nPress Shift to start"
+
+
+def test_bold_message_parts_are_drawn_only_while_that_message_shows():
+    """``message_bold`` draws the terms in bold; setting any message clears it, so every other
+    screen is drawn as before (the plain path)."""
+    pg.mkQApp()
+    w = prompter.PrompterWidget()
+    w.resize(900, 1000)
+    w.message = TERMS_SLIDE
+    plain = w.grab().toImage()
+    w.message_bold = dict(TERMS_BOLD)
+    bold = w.grab().toImage()
+    assert bold != plain
+    w.message = TERMS_SLIDE
+    assert w.message_bold == {} and w.grab().toImage() == plain
+    w.message_bold = {0: 0}  # nothing bold: the rich path, drawn without bold
+    assert w.grab().toImage() != bold
+    assert not w.grab().isNull()
+
+
+def test_the_shipped_terms_fit_a_small_window(tmp_path):
+    """At the smallest window (400 x 600) the shipped catalogue's 7 terms, in bold, shrink until
+    the slide fits the area above the hand."""
+    from deftemg_acquisition.tasks.catalogue import load_catalogue
+
+    pg.mkQApp()
+    terms = load_catalogue(ROOT / "protocols/grasp_natural/catalogue.toml").terms
+    assert len(terms) == 7
+    blocks = [_start_block("ball", "grasp", 1, 9.0, ["Ball"], "grasp",
+                           [{"term": t.term, "text": t.text} for t in terms])]  # fmt: skip
+    with _window(tmp_path, blocks) as win:
+        w = win.prompter
+        w.resize(400, 600)
+        assert win.showing_terms and len(w.message_bold) == 7
+        lay = w.layout_for_size()
+        area = QtCore.QRectF(56, lay.header_h, w.width() - 112, lay.target_y - lay.header_h)
+        sizes = []
+
+        def document(font, width):
+            sizes.append(font.pointSizeF())
+            doc = document.real(font, width)
+            document.last = doc
+            return doc
+
+        document.real = w._message_document
+        w._message_document = document
+        assert not w.grab().isNull()
+        doc = document.last
+        assert doc.size().height() <= area.height() and doc.idealWidth() <= area.width()
+        assert len(sizes) > 1  # it had to shrink

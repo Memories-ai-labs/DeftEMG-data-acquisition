@@ -35,9 +35,10 @@ from .textblock import SELF_PACED, TextBlock, TextPrompt
 # due 10 min after the first one started, later ones 20 min after the previous one.
 RECALIBRATE_S = (600.0, 1200.0)
 
-# The task line of a block's start screen (``params["start"]["task"]``); the grasp
-# calibration's is ``textblock.GRASP_CALIBRATION_TASK`` (plus the swap when it sets out
-# more than one object).
+# The task line of a block's start screen (``params["start"]["task"]``); a natural block's is
+# its group's ``[natural_groups.<group>] task`` when the catalogue gives one, else
+# NATURAL_TASK. The grasp calibration's is ``textblock.GRASP_CALIBRATION_TASK`` (plus the swap
+# when it sets out more than one object).
 GRASP_TASK = "grasp as prompted, the hand shows which fingers"
 NATURAL_TASK = "do each task as written"
 
@@ -122,7 +123,10 @@ def _grasp_blocks(cat: Catalogue, rng: np.random.Generator, params: dict) -> lis
         }
         if obj.condition:  # so the prompter can ask for it and check the answer
             c = cat.conditions[obj.condition]
-            p["condition_questions"] = {c.id: {"ask": c.ask, "choices": list(c.choices)}}
+            q = {"ask": c.ask, "choices": list(c.choices)}
+            if c.label:  # what the screens call it ("Rubber bottle: filled")
+                q["label"] = c.label
+            p["condition_questions"] = {c.id: q}
         blocks.append(TextBlock(obj.id, "grasp", SELF_PACED, prompts, p))
     return blocks
 
@@ -151,11 +155,13 @@ def _natural_blocks(cat: Catalogue, rng: np.random.Generator, params: dict) -> l
             for u in (units[i] for i in rng.permutation(len(units)))
             for s in u.steps
         ]
+        settings = cat.natural_groups.get(group)
+        task = settings.task if settings is not None else NATURAL_TASK
         p = {
             **copy.deepcopy(params),
             "group": group,
             "conditions": [],
-            "start": {"set_out": list(items[group]), "task": NATURAL_TASK},
+            "start": {"set_out": list(items[group]), "task": task},
         }
         blocks.append(TextBlock(group, "natural", SELF_PACED, prompts, p))
     return blocks

@@ -7,7 +7,7 @@
   "params": {
     "seed": 1,
     "catalogue": "demo_tasks",
-    "catalogue_sha256": "14790640978c48b98209b4cbb46fd6a91e7c4aae791addc581610e401c72c671",
+    "catalogue_sha256": "306a16630a4968e3110f194ef5091b9cb1570a2d6d752f42739b92011611fca2",
     "timing": {
       "countdown_s": 3.0,
       "reset_s": 5.0,

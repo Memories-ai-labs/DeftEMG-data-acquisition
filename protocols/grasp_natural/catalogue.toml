@@ -19,6 +19,9 @@
 #   notes.<grasp>       shown with that grasp type's prompts
 #   condition           a session condition from [conditions], asked at the session start and
 #                       saved with the object's blocks
+# A condition ([conditions.<id>]) has ask (the question at the session start) and choices,
+# and optionally a label, what the screens call it ("Rubber bottle: filled"; without one, the
+# id: "bottle_fill_rubber = filled").
 #
 # Natural blocks: one block per group. Each task lists in items what to set out for it, as
 # the subject sees it (e.g. ["Small coffee mug", "Large coffee mug"]); the block's start screen
@@ -29,6 +32,9 @@
 # variant's steps always run one after the other, in the order listed (e.g. loosen, then
 # tighten the same fastener). est_s is the estimated time of one step; fixed_s makes a step
 # run for a fixed time (and is its estimate when est_s is not given).
+# An optional [natural_groups.<group>] table gives a group's task, the line its start screen
+# shows after "Task: " (e.g. "insert, then remove each plug"); without one it is "do each
+# task as written".
 #
 # Grasp calibration: a block of brief maximum grasps (by default thumb-index,
 # thumb-index-middle and all fingertips on a hardcover book, then power on a ball), each
@@ -144,10 +150,12 @@ flat = "flat"
 [conditions.bottle_fill_rubber]
 ask = "Rubber water bottle: filled or empty?"
 choices = ["filled", "empty"]
+label = "Rubber bottle"
 
 [conditions.bottle_fill_metal]
 ask = "Metal/plastic water bottle: filled or empty?"
 choices = ["filled", "empty"]
+label = "Metal/plastic bottle"
 
 # ---- Grasp objects ----
 
@@ -263,6 +271,22 @@ name = "Book"
 approaches = ["edge", "flat"]
 
 # ---- Natural tasks ----
+
+# The task line of each group's start screen (after "Task: ").
+[natural_groups.pages]
+task = "open the book and turn pages"
+
+[natural_groups.containers]
+task = "open and close each container, drink from each mug"
+
+[natural_groups.screw_panel]
+task = "loosen, then tighten each fastener"
+
+[natural_groups.usb]
+task = "insert, then remove each plug"
+
+[natural_groups.grip]
+task = "squeeze each grip tool once"
 
 [[natural]]
 id = "pages"

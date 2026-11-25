@@ -479,6 +479,8 @@ describe every key) holds:
 - **Grasp types** (the fingertips highlighted on the hand, or the whole hand), **variations**
   (light grasp, grasp and squeeze, pick up and place, pick up and rotate slowly or quickly,
   ...; each with an estimated time), **approaches** and session **conditions**.
+  - A condition's optional `label` is what the screens call it ("Rubber bottle: filled");
+    without one they show its id ("Conditions: bottle_fill_rubber = filled").
   - A variation's `lead` is a line drawn in bold between the grasp line and its text: "STAY ON
     TABLE" for the light grasp and the squeeze, "PICK UP" for the others.
   - `first_approach_only = true` (the two rotate variations) keeps the variation, per grasp
@@ -495,6 +497,9 @@ describe every key) holds:
   and in order. `group` decides which block a task joins, and `fixed_s` gives a task a fixed
   duration (page turning). Each task must list in `items` what to set out for it, as the
   subject sees it (the block's start screen lists them). The shipped file has 31 trials in 5 groups.
+  An optional `[natural_groups.<group>]` table gives the group's `task`, the line its start
+  screen shows after "Task:" ("insert, then remove each plug"); without one it is "do each
+  task as written".
 - **Terms** (`[[terms]]`, optional): each a term and what it means ("Pick up: lift the object
   off the table"), shown to the subject before the first block, in this order.
 - **Grasp calibration** (`[calibration]`, optional): the hold time and the maxima, overriding
@@ -529,14 +534,16 @@ order (skipping `plan.json`), and lane and text blocks can be mixed. The screen 
 block, the prompt number and the session conditions, then the prompt's text (its `lead` line
 in bold) and the hand with the grasp highlighted (fingertips, or the whole hand for a power
 grasp).
-- **Terms:** when the window opens, a slide lists the catalogue's terms (a run of blocks
-  without them skips it). Shift, Space or Enter closes it, without starting a block; `T`
+- **Terms:** when the window opens, a slide lists the catalogue's terms, each in bold before
+  what it means (a run of blocks without them skips it). Shift, Space or Enter closes it, without starting a block; `T`
   between blocks shows it again.
 - **Start screen:** between blocks, one item per line (several objects listed under "Set
-  out:"): the block's name, "Set out:" with the objects to put out, "Task:" with what to do,
-  the number of prompts and the estimated minutes (or where it resumes), the session
-  conditions, and "Shift to start". Block files made before these screens show the object to
-  place and a paragraph of instructions instead.
+  out:"): "Set out:" with the objects to put out, "Task:" with what to do (for a natural
+  block, its group's task line), the number of prompts and the estimated minutes (or where it
+  resumes), the session conditions ("Rubber bottle: filled"), and "Shift to start". The header
+  above names the block; "(already done)" comes first for a block done before. Block files
+  made before these screens show the block's name, the object to place and a paragraph of
+  instructions instead.
 
 1. Shift starts the block on a preview of the first prompt: "Rest. Next:", the prompt dimmed,
    and "Space to start" (with "r: redo the last prompt" when the prompt before can be redone).

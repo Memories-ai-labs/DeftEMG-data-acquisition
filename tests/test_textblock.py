@@ -245,6 +245,14 @@ def test_start_and_terms_load(tmp_path):
         (lambda p: p["terms"][1].update(term=" "), r"params\.terms\[1\]\.term: expected"),
         (lambda p: p["terms"][1].update(text=5), r"params\.terms\[1\]\.text: expected"),
         (lambda p: p["terms"][1].update(term="Light grasp"), r"params\.terms: 'Light grasp' is"),
+        (
+            lambda p: p["terms"][0].update(term="Light\ngrasp"),
+            r"params\.terms\[0\]\.term: expected one",
+        ),
+        (
+            lambda p: p["terms"][1].update(text="lift\nit"),
+            r"params\.terms\[1\]\.text: expected one",
+        ),
     ],
 )
 def test_bad_start_or_terms_fail_at_load(change, match):

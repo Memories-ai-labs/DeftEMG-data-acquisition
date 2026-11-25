@@ -70,6 +70,24 @@ def test_condition_questions_come_from_the_blocks_that_use_them():
             prompter.condition_questions([(Path("g.json"), _text("g", ["x"], bad))])
 
 
+def test_blocks_must_agree_on_a_conditions_label():
+    """The screens show the label, so two blocks labelling a condition differently (or one not
+    at all) are an error, as a different ask is."""
+    q = {"ask": "Bottle filled?", "choices": ["filled", "empty"]}
+
+    def block(name, label):
+        return (Path(f"{name}.json"), _text(name, ["bottle"], {"bottle": {**q, **label}}))
+
+    same = [block("a", {"label": "Bottle"}), block("b", {"label": "Bottle"})]
+    assert prompter.condition_questions(same) == {"bottle": {**q, "label": "Bottle"}}
+    for label in ({"label": "Rubber bottle"}, {}):
+        with pytest.raises(SystemExit, match=r"bottle: a\.json and c\.json ask it differently"):
+            prompter.condition_questions([*same, block("c", label)])
+    for bad in ("", " ", 3):
+        with pytest.raises(SystemExit, match=r"d\.json: condition_questions\.bottle\.label"):
+            prompter.condition_questions([block("d", {"label": bad})])
+
+
 def test_ask_conditions():
     q = {"bottle": {"ask": "Bottle filled?", "choices": ["filled", "empty"]}, "lid": None}
     said: list[str] = []

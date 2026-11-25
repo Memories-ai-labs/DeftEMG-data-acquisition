@@ -124,6 +124,7 @@ def test_natural_blocks_reach_the_last_session(cat):
 def test_empty_catalogue_is_an_error():
     data = copy.deepcopy(tomllib.loads(SHIPPED.read_text()))
     data["objects"], data["natural"] = [], []
+    del data["natural_groups"]  # its groups are gone with the tasks
     with pytest.raises(ValueError, match="no objects or natural tasks"):
         generate_task_blocks(parse_catalogue(data), seed=1)
 
@@ -215,6 +216,7 @@ def test_block_params(cat, ts):
         "bottle_fill_rubber": {
             "ask": cat.conditions["bottle_fill_rubber"].ask,
             "choices": ["filled", "empty"],
+            "label": "Rubber bottle",
         }
     }
     assert questions["tuna_can"] is None and questions[None] is None  # only where one is used
@@ -232,10 +234,32 @@ def test_block_start(cat, ts):
     # a group's tasks' items, in catalogue order, each once
     assert start["containers"] == {
         "set_out": ["Aquaphor tube", "Medium cream jar", "Small coffee mug", "Large coffee mug"],
-        "task": "do each task as written",
+        "task": "open and close each container, drink from each mug",
     }
     assert start["pages"]["set_out"] == ["Book"]
     assert start["usb"]["set_out"] == ["USB-C plug", "USB-A plug", "A-to-C adapter", "USB ports"]
+    # each group's own task line
+    for group, settings in cat.natural_groups.items():
+        assert start[group]["task"] == settings.task
+
+
+def test_a_group_or_condition_without_its_line_or_label_falls_back():
+    """A group with no [natural_groups.<group>] task gets the generic task line; a condition
+    with no label has none in ``condition_questions`` (the screens show its name)."""
+    data = copy.deepcopy(tomllib.loads(SHIPPED.read_text()))
+    del data["natural_groups"]["usb"]
+    del data["conditions"]["bottle_fill_metal"]["label"]
+    blocks = generate_task_blocks(parse_catalogue(data, sha256="x"), seed=1).blocks
+    by = {b.params.get("object", b.params.get("group")): b.params for b in blocks}
+    assert by["usb"]["start"]["task"] == "do each task as written"
+    assert by["grip"]["start"]["task"] == "squeeze each grip tool once"
+    assert by["water_bottle_metal"]["condition_questions"]["bottle_fill_metal"] == {
+        "ask": "Metal/plastic water bottle: filled or empty?",
+        "choices": ["filled", "empty"],
+    }
+    assert by["water_bottle_rubber"]["condition_questions"]["bottle_fill_rubber"]["label"] == (
+        "Rubber bottle"
+    )
 
 
 def test_natural_items_repeated_in_a_group_are_set_out_once():

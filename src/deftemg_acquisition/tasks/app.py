@@ -21,11 +21,14 @@ the block ``tail_s`` later. Closing the window then saves it as complete at once
 (Esc waits ``tail_s`` first). Enter before that ends the block early, as for a lane block.
 Timed text blocks (the old grasp calibration) are only replayed: the window rejects them.
 A text block's start screen is one line per item: ``params["start"]`` gives what to set out and
-the task; the prompts and their length, the conditions and "Shift to start" follow (a block
-file without ``start`` keeps the older screen, its ``object_name`` and ``instructions``).
-The terms slide (``params["terms"]`` of the first text block that has them, a term and what it
-means per line) is shown when the window opens; Shift, Space or Enter close it, and T shows
-it again between blocks.
+the task; the prompts and their length, the conditions and "Shift to start" follow, and the
+header above names the block (a block file without ``start`` keeps the older screen, with the
+block's name, its ``object_name`` and ``instructions``). A condition shows as its ``label``
+from ``params["condition_questions"]`` ("Rubber bottle: filled"), or without one as its name
+("Conditions: bottle_fill = filled"), here and during the block.
+The terms slide (``params["terms"]`` of the first text block that has them, a term in bold and
+what it means per line) is shown when the window opens; Shift, Space or Enter close it, and T
+shows it again between blocks.
 Markers: ``text|preview|i``, ``text|countdown|i``,
 ``text|go|i|<label>``, ``text|end|i``; the sync patch flashes at each Go.
 
@@ -108,6 +111,8 @@ from .textblock import (
     TextBlock,
     calibration_for_block,
     check_start_and_terms,
+    condition_labels,
+    conditions_line,
 )
 
 log = logging.getLogger(__name__)
@@ -336,9 +341,10 @@ class TaskWindow(QtWidgets.QMainWindow):
         if self.terms is None or self.running:
             return
         self.showing_terms = True
-        # a blank line between terms, as between the start screen's items
+        # a blank line between terms, as between the start screen's items, each term in bold
         terms = "\n\n".join(f"{t['term']}: {t['text']}" for t in self.terms)
         self.prompter.message = f"Terms\n\n{terms}\n\nShift to go on"
+        self.prompter.message_bold = {2 + 2 * i: len(t["term"]) for i, t in enumerate(self.terms)}
         self.prompter.update()
 
     def _show_idle(self) -> None:
@@ -367,8 +373,9 @@ class TaskWindow(QtWidgets.QMainWindow):
             extra = "".join(t for t in self._plugins("instructions", self.sequence) if t)
             if isinstance(self.sequence, TextBlock) and "start" in self.sequence.params:
                 # One item per line (or group of lines), a blank line between (so a wrapped
-                # line still reads as one item), and no key instructions but Shift
-                items = [f"{self.sequence.name}{again}", *self._text_summary(), how, extra.strip()]
+                # line still reads as one item), and no key instructions but Shift; the header
+                # names the block
+                items = [again.strip(), *self._text_summary(), how, extra.strip()]
                 body = "\n\n".join(t for t in items if t) + "\n\nShift to start"
             else:  # a lane block, or an older text block file
                 what = ("".join(f"{t}\n" for t in self._text_summary())
@@ -405,7 +412,9 @@ class TaskWindow(QtWidgets.QMainWindow):
             length = (f"{self._resume_line(block)}\n{left} prompt{'s' if left != 1 else ''} "
                       f"left, about {max(1, round(block.estimate_s(k) / 60))} min")  # fmt: skip
         conds = self._conditions_line(block)
-        return [*items, length, *([f"Conditions: {conds}"] if conds else [])]
+        if conds and not all(condition_labels(block, block_conditions(block)).values()):
+            conds = f"Conditions: {conds}"  # a label says what it is, a name may not
+        return [*items, length, *([conds] if conds else [])]
 
     def _resume_line(self, block: Sequence | TextBlock) -> str:
         """Where the current ``block`` resumes, for the idle screen; empty if it doesn't."""
@@ -435,7 +444,8 @@ class TaskWindow(QtWidgets.QMainWindow):
         return {name: self.conditions[name] for name in block_conditions(block)}
 
     def _conditions_line(self, block: Sequence | TextBlock) -> str:
-        return ", ".join(f"{k} = {v}" for k, v in self._block_conditions(block).items())
+        """The conditions ``block`` uses, for its screens (``textblock.conditions_line``)."""
+        return conditions_line(block, self._block_conditions(block))
 
     def _effort_note(self) -> str:
         if isinstance(self.sequence, TextBlock):  # no effort bar on text blocks

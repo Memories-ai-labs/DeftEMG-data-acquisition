@@ -175,6 +175,28 @@ def text_trial(tmp_path_factory):
     return _records(tmp)[0]["npz_path"]
 
 
+def test_a_labelled_condition_replays_as_the_live_screen_showed_it(tmp_path):
+    from test_text_window import Qt, _grasp_block, _key, _records, _window
+
+    from deftemg_acquisition.viz.replay import load_trial
+
+    block = _grasp_block(n=1)
+    block.params["conditions"] = ["bottle"]
+    block.params["condition_questions"] = {
+        "bottle": {"ask": "Bottle?", "choices": ["full", "empty"], "label": "Rubber bottle"}
+    }
+    with _window(tmp_path, [block], conditions={"bottle": "full"}, **TEXT_KW) as win:
+        win.show()
+        win.start_block()
+        _spin(0.2)
+        live = win.prompter.text_view.conditions
+        _key(win, Qt.Key_Return)  # end it early
+        _spin(0.5)
+        assert not win.running
+    d = load_trial(_records(tmp_path)[0]["npz_path"])
+    assert live == d.text_view.conditions == "Rubber bottle: full"
+
+
 def test_text_block_replays_in_text_mode(text_trial, prompter_trial, tmp_path):
     import pyqtgraph as pg
 
