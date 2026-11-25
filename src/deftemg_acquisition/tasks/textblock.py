@@ -87,7 +87,11 @@ GRASP_HIGHLIGHTS = {
     "AD": DIGITS,
     "Power": HAND,
 }
-GRASP_CALIBRATION_TASK = "brief maximum grasps, as hard as is comfortable"  # params["start"]
+# The grasp calibration's task (``params["start"]["task"]``), two lines on the start screen:
+# what to do (after "Task: "), then relaxing between maxima, and the swap when it sets out
+# more than one object (the book and the ball)
+GRASP_CALIBRATION_TASK = "brief maximum grasps, as hard as is comfortable\nRelax in between"
+GRASP_CALIBRATION_SWAP = "; swap objects when prompted"
 # A text block's ``params["start"]`` (what its start screen says: the items to set out and the
 # task) and ``params["terms"]`` (the subject's terms slide), checked by ``check_start_and_terms``
 START_KEYS = ("set_out", "task")
@@ -469,8 +473,8 @@ def grasp_calibration_block(
     ]  # fmt: skip
     # what to set out: each maximum's first line (its object, as the subject reads it)
     set_out = list(dict.fromkeys(m["text"].strip().splitlines()[0].strip() for m in s["maxima"]))
-    params = {"calibration": s, "reps": reps,
-              "start": {"set_out": set_out, "task": GRASP_CALIBRATION_TASK}}  # fmt: skip
+    task = GRASP_CALIBRATION_TASK + (GRASP_CALIBRATION_SWAP if len(set_out) > 1 else "")
+    params = {"calibration": s, "reps": reps, "start": {"set_out": set_out, "task": task}}
     return TextBlock(GRASP_CALIBRATION, GRASP_CALIBRATION, SELF_PACED, prompts, params)
 
 

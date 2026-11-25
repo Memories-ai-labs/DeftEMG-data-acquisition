@@ -6,6 +6,7 @@ Keys (the window must have focus):
     Left/Right   choose the previous/next block while idle
     Esc          quit (ends a running block first)
     Space, r     text blocks only: see below
+    T            show the terms slide again while idle (runs whose text blocks carry terms)
 The letters s / e / q do the same as Shift / Enter / Esc.
 
 A block ends by itself ``tail_s`` after its last prompt and the next block becomes current.
@@ -19,6 +20,12 @@ end, Space (or Enter or Esc, which then save the block as complete; Esc also qui
 the block ``tail_s`` later. Closing the window then saves it as complete at once, with no tail
 (Esc waits ``tail_s`` first). Enter before that ends the block early, as for a lane block.
 Timed text blocks (the old grasp calibration) are only replayed: the window rejects them.
+A text block's start screen is one line per item: ``params["start"]`` gives what to set out and
+the task; the prompts and their length, the conditions and "Shift to start" follow (a block
+file without ``start`` keeps the older screen, its ``object_name`` and ``instructions``).
+The terms slide (``params["terms"]`` of the first text block that has them, a term and what it
+means per line) is shown when the window opens; Shift, Space or Enter close it, and T shows
+it again between blocks.
 Markers: ``text|preview|i``, ``text|countdown|i``,
 ``text|go|i|<label>``, ``text|end|i``; the sync patch flashes at each Go.
 
@@ -94,7 +101,14 @@ from .sequence import (
     Sequence,
     active_label,
 )
-from .textblock import COUNTDOWN_S, TASK, TIMED, TextBlock, calibration_for_block
+from .textblock import (
+    COUNTDOWN_S,
+    TASK,
+    TIMED,
+    TextBlock,
+    calibration_for_block,
+    check_start_and_terms,
+)
 
 log = logging.getLogger(__name__)
 
@@ -199,11 +213,18 @@ class TaskWindow(QtWidgets.QMainWindow):
         for _, block in sequences:  # fail now, not when the block comes up mid-session
             if isinstance(block, TextBlock) and block.mode == TIMED:
                 raise ValueError(f"{block.name}: a timed text block can only be replayed, not run")
+            if isinstance(block, TextBlock):  # a hand-edited start screen or terms slide
+                check_start_and_terms(block.params, f"{block.name}: params")
             missing = [c for c in block_conditions(block) if c not in self.conditions]
             if missing:
                 given = ", ".join(self.conditions) or "none"
                 raise ValueError(f"{block.name}: needs the session condition(s) "
                                  f"{', '.join(missing)} (given: {given})")  # fmt: skip
+        # The subject's terms slide: from the first text block that has terms (None: no slide)
+        self.terms: list[dict] | None = next(
+            (b.params["terms"] for _, b in sequences
+             if isinstance(b, TextBlock) and "terms" in b.params), None)  # fmt: skip
+        self.showing_terms = False
         self.session = session
         self.sequences = sequences
         self.hand = hand
@@ -266,6 +287,7 @@ class TaskWindow(QtWidgets.QMainWindow):
         self._source_timer.start()
         self._schedule_calibration()  # a first text block: its grasp calibration first
         self._show_idle()
+        self.show_terms()  # on top of the first screen, which Shift then shows
 
     # --- state -------------------------------------------------------------------------------
 
@@ -309,7 +331,18 @@ class TaskWindow(QtWidgets.QMainWindow):
         self.prompter.warning = warning
         self.prompter.update()
 
+    def show_terms(self) -> None:
+        """Put the terms slide over the idle screen (nothing if the run has no terms)."""
+        if self.terms is None or self.running:
+            return
+        self.showing_terms = True
+        # a blank line between terms, as between the start screen's items
+        terms = "\n\n".join(f"{t['term']}: {t['text']}" for t in self.terms)
+        self.prompter.message = f"Terms\n\n{terms}\n\nShift to go on"
+        self.prompter.update()
+
     def _show_idle(self) -> None:
+        self.showing_terms = False
         if self._due_note and calibration_family(self.sequence) != self._due_family:
             self._due_note = ""  # moved to a block of the other kind: not its calibration
         self.prompter.sequence = self.sequence
@@ -331,25 +364,37 @@ class TaskWindow(QtWidgets.QMainWindow):
             resumes = self.resume_point(self.sequence) is not None  # the summary says so
             again = "  (already done)" if self.current in self.completed and not resumes else ""
             how = self.sequence.params.get("instructions")
-            what = (self._text_summary() if isinstance(self.sequence, TextBlock) else
-                    f"{len(self.sequence.prompts)} presses, "
-                    f"{self.sequence.duration_s + self.tail_s:.0f} s\n")  # fmt: skip
-            self.prompter.message = (
-                self._source_note
-                + self._due_note
-                + f"{self.sequence.name}{again}\n{what}"
-                + (f"\n{how}\n" if how else "")
-                + self._effort_note()
-                + "".join(t for t in self._plugins("instructions", self.sequence) if t)
-                + "\nPress Shift to start"
-            )
+            extra = "".join(t for t in self._plugins("instructions", self.sequence) if t)
+            if isinstance(self.sequence, TextBlock) and "start" in self.sequence.params:
+                # One item per line (or group of lines), a blank line between (so a wrapped
+                # line still reads as one item), and no key instructions but Shift
+                items = [f"{self.sequence.name}{again}", *self._text_summary(), how, extra.strip()]
+                body = "\n\n".join(t for t in items if t) + "\n\nShift to start"
+            else:  # a lane block, or an older text block file
+                what = ("".join(f"{t}\n" for t in self._text_summary())
+                        if isinstance(self.sequence, TextBlock) else
+                        f"{len(self.sequence.prompts)} presses, "
+                        f"{self.sequence.duration_s + self.tail_s:.0f} s\n")  # fmt: skip
+                body = (f"{self.sequence.name}{again}\n{what}" + (f"\n{how}\n" if how else "")
+                        + self._effort_note() + extra + "\nPress Shift to start")  # fmt: skip
+            self.prompter.message = self._source_note + self._due_note + body
         self.prompter.update()
 
-    def _text_summary(self) -> str:
-        """The idle screen's lines for a text block: the object to place, the prompts and the
-        estimated length."""
+    def _text_summary(self) -> list[str]:
+        """The idle screen's items for a text block, each a line or a group of lines: what to
+        set out (one item per line when there are several) and the task, one item per line
+        (an older block file: the object to place), the prompts and the estimated length (or
+        where the block resumes), and the conditions."""
         block = self.sequence
-        place = block.params.get("object_name")
+        start = block.params.get("start")
+        if start is not None:
+            set_out = start["set_out"]
+            first, *more = start["task"].splitlines()
+            items = ["Set out: " + set_out[0] if len(set_out) == 1 else
+                     "\n".join(["Set out:", *set_out]), f"Task: {first}", *more]  # fmt: skip
+        else:
+            place = block.params.get("object_name")
+            items = [f"Place: {place}"] if place else []
         n = len(block.prompts)
         resume = self.resume_point(block)
         if resume is None:
@@ -360,8 +405,7 @@ class TaskWindow(QtWidgets.QMainWindow):
             length = (f"{self._resume_line(block)}\n{left} prompt{'s' if left != 1 else ''} "
                       f"left, about {max(1, round(block.estimate_s(k) / 60))} min")  # fmt: skip
         conds = self._conditions_line(block)
-        return ((f"Place: {place}\n" if place else "") + length + "\n"
-                + (f"Conditions: {conds}\n" if conds else ""))  # fmt: skip
+        return [*items, length, *([f"Conditions: {conds}"] if conds else [])]
 
     def _resume_line(self, block: Sequence | TextBlock) -> str:
         """Where the current ``block`` resumes, for the idle screen; empty if it doesn't."""
@@ -752,6 +796,14 @@ class TaskWindow(QtWidgets.QMainWindow):
         if event.isAutoRepeat() or self._saving:
             return
         if self._runner is not None and self._text_key(key):
+            return
+        if self.showing_terms and key not in (Qt.Key_Escape, Qt.Key_Q):
+            # the slide never starts a block: Shift, Space or Enter go on to the idle screen
+            if key in (Qt.Key_Shift, Qt.Key_S, Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter, Qt.Key_E):
+                self._show_idle()
+            return
+        if key == Qt.Key_T and not self.running:  # checked here: a running block ignores it
+            self.show_terms()
             return
         if key in (Qt.Key_Shift, Qt.Key_S):
             self.start_block()

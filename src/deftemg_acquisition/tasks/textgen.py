@@ -36,7 +36,8 @@ from .textblock import SELF_PACED, TextBlock, TextPrompt
 RECALIBRATE_S = (600.0, 1200.0)
 
 # The task line of a block's start screen (``params["start"]["task"]``); the grasp
-# calibration's is ``textblock.GRASP_CALIBRATION_TASK``.
+# calibration's is ``textblock.GRASP_CALIBRATION_TASK`` (plus the swap when it sets out
+# more than one object).
 GRASP_TASK = "grasp as prompted, the hand shows which fingers"
 NATURAL_TASK = "do each task as written"
 

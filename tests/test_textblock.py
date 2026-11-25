@@ -321,7 +321,8 @@ def test_grasp_calibration_is_self_paced():
     assert set(cal.params["calibration"]) == {"hold_s", "maxima"}
     assert cal.params["start"] == {
         "set_out": ["Hardcover book", "Ball"],
-        "task": "brief maximum grasps, as hard as is comfortable",
+        "task": "brief maximum grasps, as hard as is comfortable\n"
+        "Relax in between; swap objects when prompted",
     }
     assert "instructions" not in cal.params and "lead_s" not in cal.params
 
@@ -345,6 +346,19 @@ def test_grasp_calibration_overrides():
     assert {p.duration_s for p in cal.prompts} == {2.0}
     assert cal.params["calibration"]["maxima"][1]["highlight"] == ["thumb", "index"]
     assert cal.params["start"]["set_out"] == ["Ball", "Tennis ball"]  # each text's first line
+    assert cal.params["start"]["task"].endswith("Relax in between; swap objects when prompted")
+
+
+def test_a_one_object_calibration_does_not_say_swap():
+    maxima = [
+        {"grasp": "Power", "object": "ball", "text": "Ball\nPower grasp"},
+        {"grasp": "TI", "object": "ball", "text": "Ball\nThumb-index grasp"},
+    ]
+    start = grasp_calibration_block({"maxima": maxima}).params["start"]
+    assert start == {
+        "set_out": ["Ball"],
+        "task": "brief maximum grasps, as hard as is comfortable\nRelax in between",
+    }
 
 
 def test_old_calibration_keys_are_accepted_and_dropped():

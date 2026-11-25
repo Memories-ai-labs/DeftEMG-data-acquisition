@@ -9,8 +9,10 @@ Blocks are JSON files: lane sequences from ``make-sequences``, text blocks from
 ``make-task-sequences``; directories are expanded (sorted by name; a set's ``plan.json`` is
 skipped). Lane and text blocks can be mixed. Keys in the prompter window: Shift start block,
 Enter end early, Left/Right choose block, Esc quit; in a text block, Space starts a prompt's
-countdown and marks its end, and r redoes the last prompt. Each block is saved when it ends;
-the window says "Saving..." until it is (with a glove, about 2 s per block minute).
+countdown and marks its end, and r redoes the last prompt. Text blocks that carry terms open
+with the subject's terms slide (Shift goes on); T shows it again between blocks. Each block is
+saved when it ends; the window says "Saving..." until it is (with a glove, about 2 s per block
+minute).
 
 Asks for your user ID and, if you have recorded before, whether you re-donned the band since
 your last session (a new donning id if yes; the same one if no). ``--subject`` and ``--redon`` /

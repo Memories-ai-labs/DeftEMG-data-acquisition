@@ -1094,3 +1094,167 @@ def test_keys_pressed_while_saving_are_dropped(tmp_path, block):
         assert not win.running and win.isVisible() and not win._saving
         _key(win, Qt.Key_Shift)  # keys work again once saved
         assert win.running
+
+
+# --- Start screens and the terms slide ---------------------------------------------------------
+
+TERMS = [
+    {"term": "Light grasp", "text": "touch the object lightly"},
+    {"term": "Pick up", "text": "lift the object off the table"},
+]
+TERMS_SLIDE = (
+    "Terms\n\nLight grasp: touch the object lightly\n\nPick up: lift the object off the table"
+    "\n\nShift to go on"
+)
+
+
+def _start_block(name: str, task_set: str, n: int, est_s: float, set_out: list[str],
+                 task: str, terms: list[dict] | None = None) -> TextBlock:  # fmt: skip
+    """A block as the generator writes it: ``params["start"]`` (and the terms), no
+    ``instructions`` or ``object_name``."""
+    prompts = [TextPrompt(f"{name}\nPrompt {i}", name, est_s=est_s) for i in range(n)]
+    params = {"start": {"set_out": set_out, "task": task}}
+    if terms is not None:
+        params["terms"] = terms
+    return TextBlock(name, task_set, "self_paced", prompts, params)
+
+
+def test_start_screens_are_one_line_per_item(tmp_path):
+    """The grasp, natural and calibration start screens: one line per item with a blank line
+    between, no key instructions but Shift; an older block file keeps its older screen."""
+    from deftemg_acquisition.tasks.textgen import GRASP_TASK, NATURAL_TASK
+
+    grasp = _start_block("S01_b02_tuna_can", "grasp", 32, 9.0, ["Tuna can"], GRASP_TASK)
+    grasp.params["conditions"] = ["bottle_fill_rubber"]
+    items = ["Aquaphor tube", "Medium cream jar", "Small coffee mug", "Large coffee mug"]
+    natural = _start_block("S01_b03_containers", "natural", 5, 16.0, items, NATURAL_TASK)
+    blocks = [grasp, natural, grasp_calibration_block(), _grasp_block(n=2)]
+    with _window(tmp_path, blocks, conditions={"bottle_fill_rubber": "filled"}) as win:
+        screens = []
+        for _ in blocks:
+            screens.append(win.prompter.message)
+            _key(win, Qt.Key_Right)
+        assert win.current == 0 and not win.showing_terms  # no terms: no slide
+    assert [s.split("\n\n") for s in screens[:3]] == [
+        [
+            "S01_b02_tuna_can",
+            "Set out: Tuna can",
+            "Task: grasp as prompted, the hand shows which fingers",
+            "32 prompts, about 9 min",
+            "Conditions: bottle_fill_rubber = filled",
+            "Shift to start",
+        ],
+        [
+            "S01_b03_containers",
+            "Set out:\nAquaphor tube\nMedium cream jar\nSmall coffee mug\nLarge coffee mug",
+            "Task: do each task as written",
+            "5 prompts, about 2 min",
+            "Shift to start",
+        ],
+        [
+            "grasp_calibration",
+            "Set out:\nHardcover book\nBall",
+            "Task: brief maximum grasps, as hard as is comfortable",
+            "Relax in between; swap objects when prompted",
+            "4 prompts, about 1 min",
+            "Shift to start",
+        ],
+    ]
+    assert screens[3] == (
+        "tuna_can\nPlace: Tuna can\n2 prompts, about 1 min\n\n"
+        "Put the tuna can in front of the subject.\n\nPress Shift to start"
+    )
+
+
+def test_a_resumed_start_screen_names_where_it_resumes(tmp_path):
+    clock = Clock()
+    block = _start_block("mugs", "grasp", 3, 9.0, ["Small coffee mug"], "grasp")
+    with _window(tmp_path, [block], clock) as win:
+        win.start_block()
+        _do_prompt(win, clock)
+        _go_and_end_early(win, clock)
+        assert win.prompter.message.split("\n\n") == [
+            "mugs", "Set out: Small coffee mug", "Task: grasp",
+            "Resumes at prompt 2 of 3\n2 prompts left, about 1 min", "Shift to start",
+        ]  # fmt: skip
+
+
+def test_the_terms_slide_comes_first_and_t_shows_it_again(tmp_path):
+    """The slide (from the first block with terms) is shown when the window opens, over the
+    first block's screen; Shift, Space or Enter close it without starting a block, other keys
+    do nothing; T shows it again between blocks, never while a block runs."""
+    clock = Clock()
+    first = _grasp_block(n=2)  # an older block file: no terms
+    blocks = [first, _start_block("ball", "grasp", 2, 9.0, ["Ball"], "grasp", TERMS),
+              _start_block("mug", "grasp", 2, 9.0, ["Mug"], "grasp", TERMS[:1])]  # fmt: skip
+    with _window(tmp_path, blocks, clock) as win:
+        assert win.showing_terms and win.prompter.message == TERMS_SLIDE
+        assert win.prompter.text_mode and win.prompter.header.startswith("Block 1/3: tuna_can")
+        for key in (Qt.Key_Right, Qt.Key_Left, Qt.Key_T, Qt.Key_R, Qt.Key_A):
+            _key(win, key)
+            assert win.showing_terms and win.current == 0 and not win.running
+        idle = None
+        for close in (Qt.Key_Shift, Qt.Key_Space, Qt.Key_Return):
+            _key(win, close)
+            assert not win.showing_terms and not win.running and win.current == 0
+            assert idle is None or win.prompter.message == idle
+            idle = win.prompter.message
+            assert idle.startswith("tuna_can\nPlace: Tuna can")  # the first block's own screen
+            _key(win, Qt.Key_T)
+            assert win.showing_terms and win.prompter.message == TERMS_SLIDE
+        _key(win, Qt.Key_Space)
+        _key(win, Qt.Key_Shift)  # now Shift starts the block
+        assert win.running and win.prompter.text_view.phase == PREVIEW
+        _key(win, Qt.Key_T)
+        assert win.running and not win.showing_terms and win.prompter.text_view.phase == PREVIEW
+        _do_prompt(win, clock)
+        _do_prompt(win, clock)
+        _key(win, Qt.Key_T)  # at the block's DONE screen too
+        assert win.running and not win.showing_terms and win.prompter.text_view.phase == DONE
+        clock.advance(1.5)
+        _key(win, Qt.Key_Space)
+        _wait(win, clock, TAIL_S)
+        assert not win.running and win.current == 1
+        _key(win, Qt.Key_T)
+        assert win.showing_terms and win.prompter.message == TERMS_SLIDE
+    assert len(_records(tmp_path)) == 1  # the slide never started a block
+
+
+def test_without_terms_there_is_no_slide_and_t_does_nothing(tmp_path):
+    with _window(tmp_path, [_grasp_block(n=1), _lane("a")]) as win:
+        msg = win.prompter.message
+        assert not win.showing_terms and msg.startswith("tuna_can\n") and win.terms is None
+        _key(win, Qt.Key_T)
+        assert not win.showing_terms and win.prompter.message == msg
+
+
+def test_a_malformed_start_or_terms_fails_when_the_window_is_made(tmp_path):
+    cases = [
+        ("start", {"set_out": [], "task": "grasp"}, r"tuna_can: params\.start\.set_out"),
+        ("start", {"set_out": ["Ball"]}, r"tuna_can: params\.start"),
+        ("terms", [TERMS[0], TERMS[0]], r"tuna_can: params\.terms"),
+        ("terms", [{"term": "Pick up"}], r"tuna_can: params\.terms\[0\]"),
+    ]
+    for key, value, match in cases:
+        block = _grasp_block(n=1)
+        block.params[key] = value  # hand-edited after loading
+        with pytest.raises(ValueError, match=match):
+            with _window(tmp_path, [_grasp_block("ball", n=1), block]):
+                pass
+    assert not (tmp_path / "s" / "trials.jsonl").exists()  # nothing recorded
+
+
+def test_esc_or_q_on_the_terms_slide_quits_without_recording(tmp_path):
+    for i, key in enumerate((Qt.Key_Escape, Qt.Key_Q)):
+        block = _start_block("ball", "grasp", 1, 9.0, ["Ball"], "grasp", TERMS)
+        with _window(tmp_path / str(i), [block]) as win:
+            win.show()
+            assert win.showing_terms and win.isVisible()
+            _key(win, key)
+            assert not win.isVisible() and not win.running
+        assert not (tmp_path / str(i) / "s" / "trials.jsonl").exists()  # nothing recorded
+
+
+def test_a_lane_blocks_start_screen_is_unchanged(tmp_path):
+    with _window(tmp_path, [_lane("a")]) as win:  # 0.5 s of presses + the 0.5 s tail
+        assert win.prompter.message == "a\n1 presses, 1 s\n\nPress Shift to start"
