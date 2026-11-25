@@ -24,8 +24,12 @@ import numpy as np
 
 from deftemg_acquisition.analysis.timing import emg_segments, fit_sample_times
 from deftemg_acquisition.tasks.sequence import DIGITS, LEGACY_LEVELS
+from deftemg_acquisition.tasks.textblock import PROMPT_ARRAY_FIELDS
 
 PROMPTER_TASK = "scroll_prompter"
+# Why ``select_trials`` leaves out a text-prompt block (``tasks.textblock``): it has no lane
+# targets (digits and levels), only prompt text and the operator's marks.
+TEXT_BLOCK = "text-prompt block (no digit prompts)"
 
 
 def read_session_info(session_dir: Path) -> dict[str, Any]:
@@ -89,6 +93,34 @@ class Prompts:
 
 
 @dataclass
+class TextPrompts:
+    """A text-prompt block's attempts on the host timeline, one row per attempt (a redo adds a
+    row), from the trial's ``text_*`` arrays; -1 = did not happen. ``prompt_index`` is always
+    an index into the whole block (the trial's ``sequence`` metadata), also in a resumed run."""
+
+    prompt_index: np.ndarray  # (n,) int
+    preview_ns: np.ndarray
+    countdown_ns: np.ndarray
+    go_ns: np.ndarray  # scheduled Go
+    end_ns: np.ndarray
+    go_paint_ns: np.ndarray  # first frame drawn showing Go
+    end_reason: np.ndarray  # (n,) str: "operator", "timer", "block_end"
+    status: np.ndarray  # (n,) str: "ok", "redo", "cancelled", "incomplete"
+    object: np.ndarray  # (n,) str, the prompt's fields ("" = none)
+    grasp: np.ndarray
+    approach: np.ndarray
+    variation: np.ndarray
+    step: np.ndarray
+    text: np.ndarray
+    block_start_ns: int
+    resume_from: int  # the block's prompt this run started at (0: a fresh run)
+    resumed_trial: str | None  # npz stem of the run before, for a resumed run
+
+    def __len__(self) -> int:
+        return len(self.prompt_index)
+
+
+@dataclass
 class TrialInfo:
     """Metadata of one trial, available without loading its EMG."""
 
@@ -105,6 +137,7 @@ class TrialInfo:
     prompt_hash: str | None  # same prompts (times, digits, levels) -> same hash
     level_names: tuple[str, ...]
     n_prompts: int = 0
+    is_text_block: bool = False  # a text-prompt block (``Trial.text_prompts``), no lane prompts
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -156,6 +189,7 @@ class Trial:
     prompts: Prompts | None
     scroll_start_ns: int | None  # host time of the prompter's t = 0
     arrays: dict[str, np.ndarray] = field(repr=False, default_factory=dict)  # if asked for
+    text_prompts: TextPrompts | None = None  # a text-prompt block's attempts
 
     @property
     def id(self) -> str:
@@ -197,6 +231,7 @@ def scan_trial(npz_path: Path) -> TrialInfo:
         )
         prompt_hash = _prompt_hash(d) if has_prompts else None
         n_prompts = len(d["prompt_onset_host_ns"]) if has_prompts else 0
+        is_text_block = "text_go_host_ns" in files
     return TrialInfo(
         id=f"{session_dir.name}/{npz_path.stem}",
         npz_path=npz_path,
@@ -211,6 +246,7 @@ def scan_trial(npz_path: Path) -> TrialInfo:
         prompt_hash=prompt_hash,
         level_names=level_names,
         n_prompts=n_prompts,
+        is_text_block=is_text_block,
     )
 
 
@@ -260,6 +296,7 @@ def load_trial(npz_path: Path, keep_arrays: bool = False) -> Trial:
             legacy_levels=info.legacy_levels,
         )
     scroll = arrays.get("scroll_start_host_ns")
+    text_prompts = _text_prompts(arrays, info.metadata) if info.is_text_block else None
     return Trial(
         info=info,
         emg_uv=arrays["emg_uv"],
@@ -271,6 +308,28 @@ def load_trial(npz_path: Path, keep_arrays: bool = False) -> Trial:
         prompts=prompts,
         scroll_start_ns=int(scroll) if scroll is not None else None,
         arrays=arrays if keep_arrays else {},
+        text_prompts=text_prompts,
+    )
+
+
+def _text_prompts(arrays: dict[str, np.ndarray], meta: dict[str, Any]) -> TextPrompts:
+    def ints(key):
+        return arrays[f"text_{key}"].astype(np.int64)
+
+    def strs(key):
+        return arrays[f"text_{key}"].astype(str)
+
+    return TextPrompts(
+        prompt_index=ints("prompt_index"),
+        preview_ns=ints("preview_host_ns"),
+        countdown_ns=ints("countdown_host_ns"),
+        go_ns=ints("go_host_ns"),
+        end_ns=ints("end_host_ns"),
+        go_paint_ns=ints("go_paint_ns"),
+        **{k: strs(k) for k in ("end_reason", "status", *PROMPT_ARRAY_FIELDS)},
+        block_start_ns=int(arrays["block_start_host_ns"]),
+        resume_from=int(meta.get("text_resume_from", 0)),
+        resumed_trial=meta.get("text_resumed_trial"),
     )
 
 
@@ -293,6 +352,8 @@ def select_trials(
     for info in infos:
         if exclude_simulated and info.simulated:
             reason = "simulated armband"
+        elif info.is_text_block:
+            reason = TEXT_BLOCK
         elif not info.is_prompter:
             reason = "not a prompter trial"
         elif info.n_prompts == 0:

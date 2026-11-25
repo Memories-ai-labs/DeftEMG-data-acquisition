@@ -6,9 +6,10 @@
 
 The window shows, all on one timeline:
 - the prompter as the subject saw it (prompter trials only), with the effort bar where the
-  block recorded one,
+  block recorded one; a text-prompt block in text mode, redrawn from its recorded times,
 - the EMG traces, spectrum and IMU as in the live viewer, with a line at the start of each
-  prompted press, coloured by digit, appearing as the press starts,
+  prompted press, coloured by digit, appearing as the press starts (a text-prompt block: at
+  each Go, labelled with the object and grasp or step),
 - a camera panel, empty until camera recording is added (see :class:`VideoSource`).
 
 Other code can replay more with the trial (``panels``: :class:`ReplayPanel`, e.g. a model's
@@ -34,7 +35,14 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from deftemg_acquisition.data import trials
 from deftemg_acquisition.tasks.effort import ZONES
 from deftemg_acquisition.tasks.prompter import DEFAULT_LOOKAHEAD_S, DIGIT_COLORS, PrompterWidget
+from deftemg_acquisition.tasks.selfpaced import (
+    Attempt,
+    TextView,
+    attempts_from_arrays,
+    text_view_at,
+)
 from deftemg_acquisition.tasks.sequence import Prompt, Sequence
+from deftemg_acquisition.tasks.textblock import COUNTDOWN_S, HAND, TextBlock
 from deftemg_acquisition.viz.gpu_traces import make_trace_plot
 from deftemg_acquisition.viz.panels import (
     BandRms,
@@ -54,6 +62,7 @@ SPEEDS = [0.1, 0.25, 0.5, 1.0, 2.0, 4.0]
 
 
 LEVEL_TAGS = {"low": "L", "medium": "M", "high": "H", "max": "MAX"}
+TEXT_MARK_COLOR = "#dddddd"  # a text prompt highlighting the whole hand, or nothing
 
 
 @dataclass
@@ -83,6 +92,24 @@ class EffortTrace:
 
 
 @dataclass
+class TextReplay:
+    """A text-prompt block as the subject saw it: ``at(t)`` is the prompter's view at trial
+    time ``t``, built from the recorded attempts like the live view (``text_view_at``)."""
+
+    block: TextBlock
+    attempts: list[Attempt]
+    t0_ns: int  # host time of trial time 0
+    start_ns: int  # block_start_host_ns
+    countdown_s: float
+    conditions: str  # the session conditions the block used, as the live screen showed them
+
+    def at(self, t: float) -> TextView:
+        return text_view_at(self.block, self.attempts, self.t0_ns + round(t * 1e9),
+                            start_ns=self.start_ns, countdown_s=self.countdown_s,
+                            conditions=self.conditions)  # fmt: skip
+
+
+@dataclass
 class ReplayData:
     """One trial on a single timeline: seconds since its first EMG sample."""
 
@@ -95,13 +122,14 @@ class ReplayData:
     gyro: np.ndarray
     acc: np.ndarray
     prompts: list[PromptMark]
-    sequence: Sequence | None  # for redrawing the prompter
-    scroll_start_s: float | None  # trial time of the prompter's t = 0
+    sequence: Sequence | None  # for redrawing the prompter (lane blocks)
+    scroll_start_s: float | None  # trial time of the prompter's t = 0 (lane blocks)
     hand: str
     arm: str  # arm wearing the band
     lookahead_s: float
     effort: EffortTrace | None = None
     trial_id: str = ""  # "<session>/<trial>" (trials.TrialInfo.id)
+    text_view: TextReplay | None = None  # for redrawing the prompter (text-prompt blocks)
 
     @property
     def duration_s(self) -> float:
@@ -157,6 +185,10 @@ def load_trial(npz_path: Path) -> ReplayData:
                                  [p.level_names[c] if c >= 0 else None
                                   for c in arr["effort_level"].astype(int)],
                                  {k: tuple(v) for k, v in zones.items()})  # fmt: skip
+    text_view = None
+    if trial.text_prompts is not None:
+        text_view = _text_replay(trial, meta, t0)
+        prompts = _text_marks(text_view, trial.text_prompts, rel, float(rel(trial.emg_t_ns[-1])))
 
     return ReplayData(
         name=info.label,
@@ -175,7 +207,42 @@ def load_trial(npz_path: Path) -> ReplayData:
         lookahead_s=float(meta.get("lookahead_s", DEFAULT_LOOKAHEAD_S)),
         effort=effort,
         trial_id=info.id,
+        text_view=text_view,
     )
+
+
+def _text_replay(trial: trials.Trial, meta: dict, t0_ns: int) -> TextReplay:
+    conditions = ", ".join(f"{k} = {v}" for k, v in (meta.get("conditions") or {}).items())
+    attempts = attempts_from_arrays(trial.arrays)
+    # Go as it was drawn, where logged, so the view turns to Go with its mark (a timed block's
+    # view follows its schedule instead)
+    for a, painted in zip(attempts, trial.text_prompts.go_paint_ns.tolist(), strict=True):
+        if a.go_ns >= 0 and painted >= 0:
+            a.go_ns = painted
+    return TextReplay(
+        block=TextBlock.from_dict(meta["sequence"]),
+        attempts=attempts,
+        t0_ns=t0_ns,
+        start_ns=trial.text_prompts.block_start_ns,
+        countdown_s=float(meta.get("countdown_s", COUNTDOWN_S)),
+        conditions=conditions,
+    )
+
+
+def _text_marks(text: TextReplay, tp: trials.TextPrompts, rel, end_s: float) -> list[PromptMark]:
+    """One mark per attempt that reached Go, from Go (the first frame drawn showing it where
+    logged) to its end, labelled with the prompt's object and grasp (or step); an attempt
+    that was voided says so."""
+    marks = []
+    for i in np.flatnonzero(tp.go_ns >= 0):
+        prompt = text.block.prompts[int(tp.prompt_index[i])]
+        go = tp.go_paint_ns[i] if tp.go_paint_ns[i] >= 0 else tp.go_ns[i]
+        end = float(rel(tp.end_ns[i])) if tp.end_ns[i] >= 0 else end_s
+        label = prompt.label + ("" if tp.status[i] == "ok" else f" ({tp.status[i]})")
+        h = prompt.highlight
+        color = DIGIT_COLORS[h[0]] if h and h != HAND else TEXT_MARK_COLOR
+        marks.append(PromptMark(float(rel(go)), end, label, color))
+    return marks
 
 
 # --- Camera (framework only) ------------------------------------------------------------------
@@ -289,9 +356,11 @@ class ReplayWindow(QtWidgets.QMainWindow):
             self.traces.add_marker(pr.onset_s, pr.label, pr.color, width=1.5)
 
         self.prompter = None
-        if data.sequence is not None:
+        if data.sequence is not None or data.text_view is not None:
             self.prompter = PrompterWidget(data.hand, data.lookahead_s)
-            self.prompter.sequence = data.sequence
+            # A text block puts the prompter in text mode
+            text = data.text_view
+            self.prompter.sequence = data.sequence if text is None else text.block
             self.prompter.setMinimumSize(260, 400)
             if data.effort is not None:  # the bar the subject saw
                 self.prompter.show_effort = True
@@ -444,7 +513,10 @@ class ReplayWindow(QtWidgets.QMainWindow):
         ra = np.searchsorted(d.emg_t, now - self.band.window_s)
         self.band.draw(d.emg_uv[ra:b])
         if self.prompter is not None:
-            self.prompter.t = now - d.scroll_start_s
+            if d.text_view is not None:
+                self.prompter.text_view = d.text_view.at(now)
+            elif d.scroll_start_s is not None:
+                self.prompter.t = now - d.scroll_start_s
             self.prompter.header = d.name
             if d.effort is not None:
                 self.prompter.effort = d.effort.at(now)
