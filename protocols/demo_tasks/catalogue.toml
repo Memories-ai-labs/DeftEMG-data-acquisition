@@ -1,0 +1,65 @@
+# A tiny catalogue for trying text-prompt blocks with --simulate (see the README, "Grasp and
+# natural-task blocks"). Same format as protocols/grasp_natural/catalogue.toml, which documents
+# every key. The blocks in S01/ were made from it with
+#   pixi run make-task-sequences --catalogue protocols/demo_tasks/catalogue.toml \
+#       --out protocols/demo_tasks --seed 1 --force
+
+[catalogue]
+name = "demo_tasks"
+
+[grasps.TI]
+name = "thumb-index"
+tips = ["thumb", "index"]
+
+[grasps.Power]
+name = "power"
+whole_hand = true
+
+[[variations]]
+id = "light"
+text = "Light grasp"
+est_s = 4
+
+[[variations]]
+id = "squeeze"
+text = "Grasp and squeeze"
+est_s = 6
+
+[approaches]
+side = "from the side"
+top = "from the top"
+
+[conditions.mug_fill]
+ask = "Mug: filled or empty?"
+choices = ["filled", "empty"]
+
+[[objects]]
+id = "tennis_ball"
+name = "Tennis ball"
+
+[[objects]]
+id = "mug"
+name = "Coffee mug"
+approaches = ["side", "top"]
+exclude_variations = ["squeeze"]
+notes.TI = "on the lip"
+condition = "mug_fill"
+
+[[natural]]
+id = "jar"
+group = "jar_and_pages"
+est_s = 8
+
+[[natural.steps]]
+id = "open"
+text = "Open the turn-lid of the jar"
+
+[[natural.steps]]
+id = "close"
+text = "Close the turn-lid of the jar"
+
+[[natural]]
+id = "pages"
+group = "jar_and_pages"
+text = "Open the book, then turn pages until the time is up"
+fixed_s = 10

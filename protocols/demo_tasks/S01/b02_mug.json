@@ -1,0 +1,101 @@
+{
+  "kind": "text_block",
+  "name": "S01_b02_mug",
+  "task": "text_prompter",
+  "task_set": "grasp",
+  "mode": "self_paced",
+  "params": {
+    "seed": 1,
+    "catalogue": "demo_tasks",
+    "catalogue_sha256": "3fa98f998ebb02b62524cbe6d57a1421d60391caed5b6c859107408feeb908b6",
+    "timing": {
+      "countdown_s": 3.0,
+      "reset_s": 5.0,
+      "object_swap_s": 45.0,
+      "session_setup_s": 180.0,
+      "calibration_s": 90.0,
+      "session_limit_s": 1800.0,
+      "recalibrate_s": [
+        600.0,
+        1200.0
+      ]
+    },
+    "object": "mug",
+    "object_name": "Coffee mug",
+    "conditions": [
+      "mug_fill"
+    ],
+    "instructions": "Put the coffee mug in front of the subject. Each prompt names the approach, the grasp (shown on the hand) and the task. Space starts a 3 s countdown; at Go the subject does the task, then returns to rest, and Space marks the end. r redoes the last prompt.",
+    "condition_questions": {
+      "mug_fill": {
+        "ask": "Mug: filled or empty?",
+        "choices": [
+          "filled",
+          "empty"
+        ]
+      }
+    },
+    "session": "S01",
+    "plan_est_s": 93.0
+  },
+  "prompts": [
+    {
+      "text": "Coffee mug, from the top\nPower grasp\nLight grasp",
+      "object": "mug",
+      "grasp": "Power",
+      "approach": "top",
+      "variation": "light",
+      "step": null,
+      "group": null,
+      "highlight": "hand",
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 4.0
+    },
+    {
+      "text": "Coffee mug, from the side\nThumb-index grasp, on the lip\nLight grasp",
+      "object": "mug",
+      "grasp": "TI",
+      "approach": "side",
+      "variation": "light",
+      "step": null,
+      "group": null,
+      "highlight": [
+        "thumb",
+        "index"
+      ],
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 4.0
+    },
+    {
+      "text": "Coffee mug, from the top\nThumb-index grasp, on the lip\nLight grasp",
+      "object": "mug",
+      "grasp": "TI",
+      "approach": "top",
+      "variation": "light",
+      "step": null,
+      "group": null,
+      "highlight": [
+        "thumb",
+        "index"
+      ],
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 4.0
+    },
+    {
+      "text": "Coffee mug, from the side\nPower grasp\nLight grasp",
+      "object": "mug",
+      "grasp": "Power",
+      "approach": "side",
+      "variation": "light",
+      "step": null,
+      "group": null,
+      "highlight": "hand",
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 4.0
+    }
+  ]
+}

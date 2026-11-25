@@ -11,7 +11,8 @@ to fit the session limit, with files named ``bNN_<object or group>.json`` in run
 session with ``pixi run prompter protocols/G01/S01``. ``plan.json`` records the seed, the timing
 assumptions and every session's blocks and estimate. Timing assumptions come from the
 catalogue's ``[timing]`` table; the options below override them. ``--summary`` prints the
-counts and session estimates without writing anything.
+counts and session estimates without writing anything. Lane (finger-press) blocks come from
+``make-sequences``; the README's "Grasp and natural-task blocks" covers the catalogue format.
 
 The seed is random unless ``--seed`` is given, so the command refuses to write into a folder
 that already holds a set (``plan.json`` or ``S01/``...). ``--force`` replaces the set: the new

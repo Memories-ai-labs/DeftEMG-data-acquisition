@@ -13,6 +13,9 @@ blocks of ``--per-block`` presses. Files are named ``<prefix>_<set>_bNN.json``. 
 ``squeeze`` always join the thumb with other digits: by default one other digit or the whole
 hand (``--chord-sizes`` counts the thumb: 2 5; 3 and 4 add two- and three-finger chords), and
 the prompter shows their instructions before each block.
+
+Written grasp and natural-task prompts (text blocks) come from ``make-task-sequences`` instead;
+the prompter runs both kinds (``pixi run prompter``).
 """
 
 from __future__ import annotations

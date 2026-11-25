@@ -1,0 +1,60 @@
+{
+  "seed": 1,
+  "catalogue": "demo_tasks",
+  "catalogue_path": "protocols/demo_tasks/catalogue.toml",
+  "catalogue_sha256": "3fa98f998ebb02b62524cbe6d57a1421d60391caed5b6c859107408feeb908b6",
+  "timing": {
+    "countdown_s": 3.0,
+    "reset_s": 5.0,
+    "object_swap_s": 45.0,
+    "session_setup_s": 180.0,
+    "calibration_s": 90.0,
+    "session_limit_s": 1800.0,
+    "recalibrate_s": [
+      600.0,
+      1200.0
+    ]
+  },
+  "capacity_s": 1440.0,
+  "counts": {
+    "grasp": 8,
+    "natural": 3
+  },
+  "sessions": [
+    {
+      "session": "S01",
+      "est_s": 555.0,
+      "calibrations": 1,
+      "grasp_trials": 8,
+      "natural_trials": 3,
+      "blocks": [
+        {
+          "file": "S01/b01_tennis_ball.json",
+          "name": "S01_b01_tennis_ball",
+          "task_set": "grasp",
+          "trials": 4,
+          "est_s": 97.0
+        },
+        {
+          "file": "S01/b02_mug.json",
+          "name": "S01_b02_mug",
+          "task_set": "grasp",
+          "trials": 4,
+          "est_s": 93.0
+        },
+        {
+          "file": "S01/b03_jar_and_pages.json",
+          "name": "S01_b03_jar_and_pages",
+          "task_set": "natural",
+          "trials": 3,
+          "est_s": 95.0
+        }
+      ]
+    }
+  ],
+  "files": [
+    "S01/b01_tennis_ball.json",
+    "S01/b02_mug.json",
+    "S01/b03_jar_and_pages.json"
+  ]
+}

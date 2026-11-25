@@ -1,0 +1,90 @@
+{
+  "kind": "text_block",
+  "name": "S01_b01_tennis_ball",
+  "task": "text_prompter",
+  "task_set": "grasp",
+  "mode": "self_paced",
+  "params": {
+    "seed": 1,
+    "catalogue": "demo_tasks",
+    "catalogue_sha256": "3fa98f998ebb02b62524cbe6d57a1421d60391caed5b6c859107408feeb908b6",
+    "timing": {
+      "countdown_s": 3.0,
+      "reset_s": 5.0,
+      "object_swap_s": 45.0,
+      "session_setup_s": 180.0,
+      "calibration_s": 90.0,
+      "session_limit_s": 1800.0,
+      "recalibrate_s": [
+        600.0,
+        1200.0
+      ]
+    },
+    "object": "tennis_ball",
+    "object_name": "Tennis ball",
+    "conditions": [],
+    "instructions": "Put the tennis ball in front of the subject. Each prompt names the approach, the grasp (shown on the hand) and the task. Space starts a 3 s countdown; at Go the subject does the task, then returns to rest, and Space marks the end. r redoes the last prompt.",
+    "session": "S01",
+    "plan_est_s": 97.0
+  },
+  "prompts": [
+    {
+      "text": "Tennis ball\nThumb-index grasp\nLight grasp",
+      "object": "tennis_ball",
+      "grasp": "TI",
+      "approach": null,
+      "variation": "light",
+      "step": null,
+      "group": null,
+      "highlight": [
+        "thumb",
+        "index"
+      ],
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 4.0
+    },
+    {
+      "text": "Tennis ball\nThumb-index grasp\nGrasp and squeeze",
+      "object": "tennis_ball",
+      "grasp": "TI",
+      "approach": null,
+      "variation": "squeeze",
+      "step": null,
+      "group": null,
+      "highlight": [
+        "thumb",
+        "index"
+      ],
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 6.0
+    },
+    {
+      "text": "Tennis ball\nPower grasp\nLight grasp",
+      "object": "tennis_ball",
+      "grasp": "Power",
+      "approach": null,
+      "variation": "light",
+      "step": null,
+      "group": null,
+      "highlight": "hand",
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 4.0
+    },
+    {
+      "text": "Tennis ball\nPower grasp\nGrasp and squeeze",
+      "object": "tennis_ball",
+      "grasp": "Power",
+      "approach": null,
+      "variation": "squeeze",
+      "step": null,
+      "group": null,
+      "highlight": "hand",
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 6.0
+    }
+  ]
+}

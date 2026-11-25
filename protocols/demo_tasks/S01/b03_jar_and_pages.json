@@ -1,0 +1,70 @@
+{
+  "kind": "text_block",
+  "name": "S01_b03_jar_and_pages",
+  "task": "text_prompter",
+  "task_set": "natural",
+  "mode": "self_paced",
+  "params": {
+    "seed": 1,
+    "catalogue": "demo_tasks",
+    "catalogue_sha256": "3fa98f998ebb02b62524cbe6d57a1421d60391caed5b6c859107408feeb908b6",
+    "timing": {
+      "countdown_s": 3.0,
+      "reset_s": 5.0,
+      "object_swap_s": 45.0,
+      "session_setup_s": 180.0,
+      "calibration_s": 90.0,
+      "session_limit_s": 1800.0,
+      "recalibrate_s": [
+        600.0,
+        1200.0
+      ]
+    },
+    "group": "jar_and_pages",
+    "conditions": [],
+    "instructions": "Set out the items for these tasks. Space starts a 3 s countdown; at Go the subject does the task, then returns to rest, and Space marks the end. Paired steps (loosen, then tighten) are on the same item, one after the other. r redoes the last prompt.",
+    "session": "S01",
+    "plan_est_s": 95.0
+  },
+  "prompts": [
+    {
+      "text": "Open the book, then turn pages until the time is up",
+      "object": "pages",
+      "grasp": null,
+      "approach": null,
+      "variation": null,
+      "step": null,
+      "group": "jar_and_pages",
+      "highlight": [],
+      "duration_s": 10.0,
+      "onset_s": null,
+      "est_s": 10.0
+    },
+    {
+      "text": "Open the turn-lid of the jar",
+      "object": "jar",
+      "grasp": null,
+      "approach": null,
+      "variation": null,
+      "step": "open",
+      "group": "jar_and_pages",
+      "highlight": [],
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 8.0
+    },
+    {
+      "text": "Close the turn-lid of the jar",
+      "object": "jar",
+      "grasp": null,
+      "approach": null,
+      "variation": null,
+      "step": "close",
+      "group": "jar_and_pages",
+      "highlight": [],
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 8.0
+    }
+  ]
+}
