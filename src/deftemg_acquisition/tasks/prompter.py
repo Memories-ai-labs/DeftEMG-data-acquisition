@@ -18,6 +18,12 @@ below it.
 
 Other code can draw in the lanes too (``overlays``: :class:`PrompterOverlay`, e.g. a model's
 output on the prompts' timeline) and be told when each frame has been painted (``on_paint``).
+
+Text blocks (``textblock.TextBlock``) are drawn in text mode instead: with ``text_view`` set (a
+``selfpaced.TextView``), or a ``TextBlock`` as the ``sequence``, there are no lanes, capsules,
+target rings or effort bar. The area above the hand shows where the block is, a state line
+(rest and the next prompt, 3 2 1, GO) and the prompt's text, and the hand shows the grasp: a
+disc on each highlighted fingertip, or the whole hand filled for a power grasp.
 """
 
 from __future__ import annotations
@@ -33,7 +39,9 @@ from pyqtgraph.Qt import QtCore, QtGui, QtWidgets
 from deftemg_acquisition.clock import host_ns
 from deftemg_acquisition.viz.screen import font_points, font_px
 
+from .selfpaced import COUNTDOWN, DONE, GO, IDLE, PREVIEW, TextView
 from .sequence import DIGITS, LEVELS, Sequence
+from .textblock import HAND, TextBlock
 
 log = logging.getLogger(__name__)
 
@@ -54,7 +62,10 @@ METER_H = 40  # room under the target row for the effort bar (bar, its labels, g
 METER_COLOURS = {"below": "#8C8C8C", "inside": "#009E73", "above": "#D55E00"}
 WARNING_COLOUR = "#D55E00"  # the band of ``PrompterWidget.warning``
 SYNC_PATCH_PX = 56  # sync patch: square in the top-right corner for a photodiode or camera
-SYNC_FLASH_S = 0.1  # how long it stays white after each prompt onset
+SYNC_FLASH_S = 0.1  # how long it stays white after each prompt onset (or Go, in text mode)
+HIGHLIGHT_COLOUR = "#56B4E9"  # the grasp on the hand, in text mode
+GO_COLOUR = "#009E73"
+TIP_RADIUS_CM = 0.9  # a highlighted fingertip's disc
 
 # --- Hand model ------------------------------------------------------------------------------
 # A right hand seen from above (dorsal view), in cm, x to the right, y down from the top of the
@@ -205,12 +216,30 @@ def hand_paths(lay: Layout) -> tuple[QtGui.QPainterPath, QtGui.QPainterPath]:
     return silhouette.simplified(), nails
 
 
+def tip_points(lay: Layout) -> dict[str, tuple[float, float]]:
+    """Screen position (x, y px) of each fingertip, at the centre of its rounded end: the
+    fingers of ``hand_paths``, angled from their knuckles so the tips sit under their lanes."""
+    mirror = 1 if lay.hand == "right" else -1
+    points = {}
+    for d, (kx, ky, length, _wb, wt) in FINGERS_CM.items():
+        tip_x = mirror * (lay.lane_x(d) - lay.width / 2) / lay.cm
+        dx = tip_x - kx
+        rise = math.sqrt(max(length**2 - dx**2, 0.0))
+        s = (length - wt / 2) / length  # share of the length from the knuckle
+        x, y = kx + s * dx, ky - s * rise
+        points[d] = (lay.width / 2 + mirror * x * lay.cm, lay.hand_top + y * lay.cm)
+    return points
+
+
 class PrompterOverlay:
     """Something more to draw in the prompter (``PrompterWidget.overlays``). ``paint_under``
     runs after the lane lines, before the capsules; ``paint_over`` after the target rings, before
     the effort bar and the hand. Each gets the painter (saved and restored around the call), the
     layout and the widget (``widget.t``: the block's time, None between blocks). One that raises
-    is logged and removed."""
+    is logged and removed. Text blocks have no lanes, and text mode does not call overlays
+    yet (``text_mode`` is reserved for overlays that will draw on text blocks)."""
+
+    text_mode = False
 
     def paint_under(self, p: QtGui.QPainter, lay: Layout, widget: PrompterWidget) -> None:
         pass
@@ -220,7 +249,8 @@ class PrompterOverlay:
 
 
 class PrompterWidget(QtWidgets.QWidget):
-    """Draws a :class:`Sequence` at time ``t`` (seconds since block start, set by the owner)."""
+    """Draws a :class:`Sequence` at time ``t`` (seconds since block start, set by the owner),
+    or a text block's ``text_view`` (text mode)."""
 
     def __init__(
         self,
@@ -235,7 +265,13 @@ class PrompterWidget(QtWidgets.QWidget):
         self._flash_on = False
         self.hand = hand
         self.lookahead_s = lookahead_s
-        self.sequence: Sequence | None = None
+        self.sequence: Sequence | TextBlock | None = None
+        # Text mode: what to show of a text block (set by the owner each frame); lanes are
+        # skipped and ``sequence.prompts`` is never read
+        self.text_view: TextView | None = None
+        # Host time (ns) of the first frame drawn showing Go, per attempt (``TextView.attempt``),
+        # while running (after ``begin_run``)
+        self.go_paint_ns: dict[int, int] = {}
         self.t: float | None = None  # None: not running, draw an idle screen
         # While running, t is taken from this perf_counter origin at the moment of painting,
         # so each frame shows where prompts are when it is drawn, not when it was requested.
@@ -248,6 +284,7 @@ class PrompterWidget(QtWidgets.QWidget):
         self._offsets_s = np.empty(0)
         self._hand_cache: tuple[tuple, tuple[QtGui.QPainterPath, QtGui.QPainterPath]] | None = None
         self._hand_image_cache: tuple[tuple, tuple[QtCore.QPointF, QtGui.QPixmap]] | None = None
+        self._highlight_cache: tuple[tuple, tuple[QtCore.QPointF, QtGui.QPixmap]] | None = None
         self.header = ""
         self.message = ""  # large centred text, e.g. instructions between blocks
         self.warning = ""  # a problem to fix now, on a band under the header, blocks or not
@@ -266,9 +303,15 @@ class PrompterWidget(QtWidgets.QWidget):
 
     def begin_run(self, t0_perf: float) -> None:
         """Start animating ``self.sequence`` from ``t0_perf`` (a time.perf_counter value)."""
-        n = len(self.sequence.prompts)
-        self._onsets_s = np.array([p.onset_s for p in self.sequence.prompts])
-        self._offsets_s = np.array([p.offset_s for p in self.sequence.prompts])
+        if self.text_mode:  # nothing scrolls: Go frames are logged instead (go_paint_ns)
+            n = 0
+            self._onsets_s = np.empty(0)
+            self._offsets_s = np.empty(0)
+        else:
+            n = len(self.sequence.prompts)
+            self._onsets_s = np.array([p.onset_s for p in self.sequence.prompts])
+            self._offsets_s = np.array([p.offset_s for p in self.sequence.prompts])
+        self.go_paint_ns = {}
         self.onset_paint_ns = np.full(n, -1, np.int64)
         self.offset_paint_ns = np.full(n, -1, np.int64)
         self.flash_paint_ns = []
@@ -280,6 +323,14 @@ class PrompterWidget(QtWidgets.QWidget):
         self.t0_perf = None
         self.t = None
         self.update()
+
+    @property
+    def text_mode(self) -> bool:
+        """Drawing a text block: the sequence is a text block, or there is no sequence and a
+        text view is set. A lane sequence is drawn as lanes even if a text view was left set."""
+        if isinstance(self.sequence, TextBlock):
+            return True
+        return self.sequence is None and self.text_view is not None
 
     def layout_for_size(self) -> Layout:
         meter_h = METER_H if self.show_effort else 0.0
@@ -322,6 +373,36 @@ class PrompterWidget(QtWidgets.QWidget):
             self._hand_image_cache = (key, (QtCore.QPointF(rect.topLeft()), image))
         return self._hand_image_cache[1]
 
+    def _highlight_image(
+        self, lay: Layout, highlight: tuple[str, ...] | str, dpr: float
+    ) -> tuple[QtCore.QPointF, QtGui.QPixmap]:
+        """A grasp on the hand (fingertip discs, or the whole hand for ``HAND``), drawn once
+        per size, hand, highlight and pixel ratio, as the hand is (filling the silhouette every
+        frame is slow), and where it goes. Drawn under the hand, so its outline stays on top."""
+        key = (lay.width, lay.height, lay.hand, highlight, dpr)
+        if self._highlight_cache is None or self._highlight_cache[0] != key:
+            if highlight == HAND:
+                path, alpha = self._hand(lay)[0], 130
+            else:
+                path, alpha = QtGui.QPainterPath(), 220
+                tips, r = tip_points(lay), TIP_RADIUS_CM * lay.cm
+                for d in highlight:
+                    path.addEllipse(QtCore.QPointF(*tips[d]), r, r)
+            rect = path.boundingRect().adjusted(-1, -1, 1, 1)
+            rect = rect.intersected(QtCore.QRectF(0, 0, lay.width, lay.height)).toAlignedRect()
+            image = QtGui.QPixmap(
+                max(1, math.ceil(rect.width() * dpr)), max(1, math.ceil(rect.height() * dpr))
+            )
+            image.setDevicePixelRatio(dpr)
+            image.fill(QtCore.Qt.transparent)
+            hp = QtGui.QPainter(image)
+            hp.setRenderHint(QtGui.QPainter.Antialiasing)
+            hp.translate(-rect.left(), -rect.top())
+            hp.fillPath(path, _qcolor(HIGHLIGHT_COLOUR, alpha))
+            hp.end()
+            self._highlight_cache = (key, (QtCore.QPointF(rect.topLeft()), image))
+        return self._highlight_cache[1]
+
     def paintEvent(self, _event) -> None:
         if self.t0_perf is not None:
             self.t = time.perf_counter() - self.t0_perf
@@ -331,52 +412,58 @@ class PrompterWidget(QtWidgets.QWidget):
                 (self._offsets_s, self.offset_paint_ns),
             ):
                 painted[(times_s <= self.t) & (painted < 0)] = now_ns
+            view = self.text_view if self.text_mode else None
+            if view is not None and view.phase == GO and view.attempt >= 0:
+                self.go_paint_ns.setdefault(view.attempt, now_ns)
         lay = self.layout_for_size()
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
 
-        # Lanes
-        p.setPen(QtGui.QPen(_qcolor(FOREGROUND, 25), 1))
-        for i in range(len(DIGITS) + 1):
-            x = lay.lanes_x0 + i * lay.lane_w
-            p.drawLine(QtCore.QPointF(x, lay.header_h), QtCore.QPointF(x, lay.target_y))
+        if self.text_mode:
+            self._paint_text_view(p, lay)
+        else:
+            # Lanes
+            p.setPen(QtGui.QPen(_qcolor(FOREGROUND, 25), 1))
+            for i in range(len(DIGITS) + 1):
+                x = lay.lanes_x0 + i * lay.lane_w
+                p.drawLine(QtCore.QPointF(x, lay.header_h), QtCore.QPointF(x, lay.target_y))
 
-        implied = set(self.sequence.implied_digits) if self.sequence is not None else set()
-        self._paint_overlays("paint_under", p, lay)
+            implied = set(self.sequence.implied_digits) if self.sequence is not None else set()
+            self._paint_overlays("paint_under", p, lay)
 
-        # Prompts
-        if self.sequence is not None and self.t is not None:
-            p.save()
-            p.setClipRect(QtCore.QRectF(0, lay.header_h, self.width(), self.height()))
-            p.setPen(QtCore.Qt.NoPen)
-            for pr in self.sequence.prompts:
-                ext = lay.capsule(pr.onset_s - self.t, pr.offset_s - self.t)
-                if ext is None:
-                    continue
-                top, bottom = ext
-                for d, lv in zip(pr.digits, pr.levels, strict=True):
-                    if d in implied:
+            # Prompts
+            if self.sequence is not None and self.t is not None:
+                p.save()
+                p.setClipRect(QtCore.QRectF(0, lay.header_h, self.width(), self.height()))
+                p.setPen(QtCore.Qt.NoPen)
+                for pr in self.sequence.prompts:
+                    ext = lay.capsule(pr.onset_s - self.t, pr.offset_s - self.t)
+                    if ext is None:
                         continue
-                    x, r = lay.lane_x(d), lay.radius(lv)
-                    p.setBrush(_qcolor(DIGIT_COLORS[d], 235))
-                    p.drawRoundedRect(
-                        QtCore.QRectF(x - r, top - r, 2 * r, bottom - top + 2 * r), r, r
-                    )
-            p.restore()
+                    top, bottom = ext
+                    for d, lv in zip(pr.digits, pr.levels, strict=True):
+                        if d in implied:
+                            continue
+                        x, r = lay.lane_x(d), lay.radius(lv)
+                        p.setBrush(_qcolor(DIGIT_COLORS[d], 235))
+                        p.drawRoundedRect(
+                            QtCore.QRectF(x - r, top - r, 2 * r, bottom - top + 2 * r), r, r
+                        )
+                p.restore()
 
-        # Target row: one ring per force level per lane; drawn over the
-        # prompts so the size reference stays visible during a press.
-        p.setBrush(QtCore.Qt.NoBrush)
-        levels = self._ring_levels()
-        for d in (d for d in DIGITS if d not in implied):
-            p.setPen(QtGui.QPen(_qcolor(DIGIT_COLORS[d], 130), 1.5))
-            for lv in levels:
-                r = lay.radius(lv)
-                p.drawEllipse(QtCore.QPointF(lay.lane_x(d), lay.target_y), r, r)
+            # Target row: one ring per force level per lane; drawn over the
+            # prompts so the size reference stays visible during a press.
+            p.setBrush(QtCore.Qt.NoBrush)
+            levels = self._ring_levels()
+            for d in (d for d in DIGITS if d not in implied):
+                p.setPen(QtGui.QPen(_qcolor(DIGIT_COLORS[d], 130), 1.5))
+                for lv in levels:
+                    r = lay.radius(lv)
+                    p.drawEllipse(QtCore.QPointF(lay.lane_x(d), lay.target_y), r, r)
 
-        self._paint_overlays("paint_over", p, lay)
-        if self.show_effort and self.effort is not None and self.t is not None:
-            self._paint_effort(p, lay)
+            self._paint_overlays("paint_over", p, lay)
+            if self.show_effort and self.effort is not None and self.t is not None:
+                self._paint_effort(p, lay)
 
         # Hand
         # The pixel ratio of what is painted into (the window's backing store, or the image
@@ -432,6 +519,72 @@ class PrompterWidget(QtWidgets.QWidget):
             finally:
                 p.restore()
 
+    def _paint_text_view(self, p: QtGui.QPainter, lay: Layout) -> None:
+        """Text mode, above the hand: where in the block, the state line, the prompt's text
+        (dimmed in the preview) and a hint; and the grasp on the hand during the preview, the
+        countdown and the task."""
+        view = self.text_view or TextView(IDLE)
+        prompt = view.prompt if view.phase in (PREVIEW, COUNTDOWN, GO) else None
+        if prompt is not None and prompt.highlight:
+            dpr = p.paintEngine().paintDevice().devicePixelRatioF()
+            at, image = self._highlight_image(lay, prompt.highlight, dpr)
+            p.drawPixmap(at, image)
+
+        if view.phase == PREVIEW:
+            left = view.countdown_left
+            state = "Rest. Next:" if left is None else f"Rest. Next, in {math.ceil(left)} s:"
+            hint = "Space to start" if left is None else ""
+        elif view.phase == COUNTDOWN:
+            state, hint = str(max(1, math.ceil(view.countdown_left or 0.0))), ""
+        elif view.phase == GO:
+            state = "GO"
+            left = view.time_left
+            hint = "Space when finished" if left is None else f"{math.ceil(left)} s left"
+        elif view.phase == DONE:
+            state, hint = "Block done", "Space to finish the block, r to redo the last one"
+        else:
+            state, hint = "", ""
+        where = [f"Prompt {view.index + 1} of {view.total}"] if 0 <= view.index < view.total else []
+        line = "   ".join(where + ([view.conditions] if view.conditions else []))
+
+        p.save()
+        width, top, bottom = self.width(), lay.header_h, lay.hand_top - 16
+        font = p.font()
+        font.setBold(False)
+        font.setPointSizeF(font_points(12))
+        p.setFont(font)
+        p.setPen(_qcolor(FOREGROUND, 170))
+        line_h = font_px(30)
+        p.drawText(QtCore.QRectF(16, top, width - 32, line_h),
+                   QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft, line)  # fmt: skip
+        top += line_h
+        if hint:
+            hint_h = font_px(34)
+            p.drawText(QtCore.QRectF(16, bottom - hint_h, width - 32, hint_h),
+                       QtCore.Qt.AlignCenter, hint)  # fmt: skip
+            bottom -= hint_h
+        if state:
+            font.setBold(True)
+            font.setPointSizeF(font_points(30 if view.phase in (COUNTDOWN, GO) else 18))
+            p.setFont(font)
+            p.setPen(_qcolor(GO_COLOUR if view.phase == GO else FOREGROUND))
+            state_h = font_px(72)
+            p.drawText(QtCore.QRectF(16, top, width - 32, state_h), QtCore.Qt.AlignCenter, state)
+            top += state_h
+        if prompt is not None and bottom > top:
+            area = QtCore.QRectF(32, top, width - 64, bottom - top)
+            flags = QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap
+            font.setBold(False)
+            for size in range(26, 9, -1):  # smaller text until it fits a small window
+                font.setPointSizeF(font_points(size))
+                p.setFont(font)
+                text = p.boundingRect(area, flags, prompt.text)
+                if text.height() <= area.height() and text.width() <= area.width():
+                    break
+            p.setPen(_qcolor(FOREGROUND, 120 if view.phase == PREVIEW else 255))
+            p.drawText(area, flags, prompt.text)
+        p.restore()
+
     def effort_bar(self, lay: Layout) -> QtCore.QRectF:
         """Where the effort bar's track is (its fill runs from the left edge, 0 to 1)."""
         x0 = lay.lanes_x0 + 6
@@ -477,6 +630,8 @@ class PrompterWidget(QtWidgets.QWidget):
 
     def _ring_levels(self) -> list[str]:
         """Target rings: one per force level the sequence uses (never raises in paint)."""
+        if self.text_mode:
+            return []
         if self.sequence is None:
             return list(LEVELS)
         try:
@@ -486,14 +641,24 @@ class PrompterWidget(QtWidgets.QWidget):
             return [lv for lv in LEVEL_RADIUS if lv in used] or list(LEVELS)
 
     def _paint_sync_patch(self, p: QtGui.QPainter) -> None:
-        """White for SYNC_FLASH_S from each prompt onset, otherwise black.
+        """White for SYNC_FLASH_S from each prompt onset (text mode: from the first frame
+        showing Go), otherwise black.
 
         The capsule reaches the target in the same frame, so a photodiode (or slow-motion video)
         on the patch measures when prompts actually appear. The paint time of each flash is
         logged for comparison with the scheduled onset.
         """
         on = False
-        if self.sequence is not None and self.t is not None:
+        if self.text_mode:  # white from the first frame showing Go
+            view = self.text_view
+            go_ns = self.go_paint_ns.get(view.attempt) if view is not None else None
+            on = (
+                view is not None
+                and view.phase == GO
+                and go_ns is not None
+                and host_ns() - go_ns < SYNC_FLASH_S * 1e9
+            )
+        elif self.sequence is not None and self.t is not None:
             on = any(
                 pr.onset_s <= self.t < pr.onset_s + SYNC_FLASH_S for pr in self.sequence.prompts
             )

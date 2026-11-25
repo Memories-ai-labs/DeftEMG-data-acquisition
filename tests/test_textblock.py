@@ -221,11 +221,6 @@ def test_bad_calibration_in_a_block_file_fails_at_load(tmp_path):
         load_block(path)
 
 
-def test_block_arrays_is_not_filled_in_yet():
-    with pytest.raises(NotImplementedError):
-        _grasp_block().block_arrays([])
-
-
 # ---- the grasp calibration ----
 
 

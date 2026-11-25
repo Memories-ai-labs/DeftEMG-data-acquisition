@@ -32,6 +32,11 @@ BLOCK_KEYS = ("kind", "name", "task", "task_set", "mode", "prompts")  # JSON; "p
 # Timed onsets are rounded to the millisecond, so a prompt may start this much before the
 # previous one ends without counting as an overlap.
 OVERLAP_TOLERANCE_S = 1e-3
+# The trial's per-attempt arrays (``TextBlock.block_arrays``): int64, and numpy unicode.
+TEXT_INT_ARRAYS = ("text_prompt_index", "text_preview_host_ns", "text_countdown_host_ns",
+                   "text_go_host_ns", "text_end_host_ns", "text_go_paint_ns")  # fmt: skip
+PROMPT_ARRAY_FIELDS = ("object", "grasp", "approach", "variation", "step", "text")
+TEXT_STR_ARRAYS = ("text_end_reason", "text_status", *(f"text_{k}" for k in PROMPT_ARRAY_FIELDS))
 HAND = "hand"  # highlight the whole hand (a power grasp) instead of fingertips
 # Per-prompt time assumptions behind ``TextBlock.estimate_s``, used when the block's
 # ``params["timing"]`` does not give them (s).
@@ -296,12 +301,34 @@ class TextBlock:
     def load(cls, path: Path) -> TextBlock:
         return cls.from_dict(json.loads(Path(path).read_text()))
 
-    def block_arrays(self, attempts: list) -> dict[str, np.ndarray]:
-        """The trial's ``text_*`` arrays, one row per attempt (a redo adds a row): prompt index,
-        preview / countdown / go / end host times (-1 = did not happen), first painted Go frame,
-        end reason, status, and the attempted prompts' fields. ``attempts`` come from the
-        self-paced runner, which defines them."""
-        raise NotImplementedError("filled in with the self-paced runner")
+    def block_arrays(
+        self, attempts: list, block_start_ns: int, go_paint_ns: dict[int, int] | None = None
+    ) -> dict[str, np.ndarray]:
+        """The trial's ``text_*`` arrays, one row per attempt (a redo adds a row), and the
+        scalar ``block_start_host_ns``. ``attempts`` are ``selfpaced.Attempt`` rows (prompt
+        index, host times, end reason, status); ``go_paint_ns`` maps a row to the host time of
+        its first painted Go frame. Dtypes: ``TEXT_INT_ARRAYS`` int64 (-1 = did not happen),
+        ``TEXT_STR_ARRAYS`` numpy unicode (a prompt field that is None is "")."""
+        go_paint_ns = go_paint_ns or {}
+        prompts = [self.prompts[a.index] for a in attempts]
+        ints = {
+            "text_prompt_index": [a.index for a in attempts],
+            "text_preview_host_ns": [a.preview_ns for a in attempts],
+            "text_countdown_host_ns": [a.countdown_ns for a in attempts],
+            "text_go_host_ns": [a.go_ns for a in attempts],
+            "text_end_host_ns": [a.end_ns for a in attempts],
+            "text_go_paint_ns": [go_paint_ns.get(k, -1) for k in range(len(attempts))],
+        }
+        strs = {
+            "text_end_reason": [a.end_reason for a in attempts],
+            "text_status": [a.status for a in attempts],
+            **{f"text_{k}": [getattr(p, k) or "" for p in prompts] for k in PROMPT_ARRAY_FIELDS},
+        }
+        return {
+            **{k: np.array(v, dtype=np.int64) for k, v in ints.items()},
+            **{k: np.array(v, dtype=np.str_) for k, v in strs.items()},
+            "block_start_host_ns": np.int64(block_start_ns),
+        }
 
 
 def load_block(path: Path) -> Sequence | TextBlock:
