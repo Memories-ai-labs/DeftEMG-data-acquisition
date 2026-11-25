@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import time
@@ -275,39 +276,71 @@ def test_attempts_that_never_reached_go_give_no_marks(tmp_path):
     win.close()
 
 
-def test_a_grasp_calibration_replays_from_its_block_start(tmp_path, monkeypatch):
-    """A timed block follows its schedule from block_start_host_ns, not the first EMG sample:
-    here the window's clock runs 0.3 s ahead of the EMG's."""
-    from test_text_window import _records, _window
+def test_a_timed_calibration_replays_from_its_block_start(tmp_path, monkeypatch,
+                                                          timed_calibration):  # fmt: skip
+    """A timed block (a calibration from the first trial run) follows its schedule from
+    block_start_host_ns, not the first EMG sample: here the window's clock runs 0.3 s ahead of
+    the EMG's. The window no longer runs timed blocks, so a self-paced calibration is recorded
+    and its trial's block and ``text_*`` arrays replaced by a timed one's, as the trial run
+    saved them: each attempt previewed and counted down from the previous prompt's end, Go
+    (drawn 10 ms later) at its onset, the end at its offset."""
+    from test_text_window import Qt, _key, _records, _window
 
     from deftemg_acquisition.clock import host_ns
     from deftemg_acquisition.tasks import prompter
-    from deftemg_acquisition.tasks.selfpaced import GO, PREVIEW
-    from deftemg_acquisition.tasks.textblock import grasp_calibration_block
+    from deftemg_acquisition.tasks.selfpaced import GO, OK, PREVIEW, TIMER, Attempt
+    from deftemg_acquisition.tasks.textblock import TextBlock, grasp_calibration_block
     from deftemg_acquisition.viz.replay import ReplayWindow, load_trial
 
     def ahead():
         return host_ns() + 300_000_000
 
     monkeypatch.setattr(prompter, "host_ns", ahead)  # Go paint times on the same clock
-    cal = grasp_calibration_block({"rest_s": 0.2, "hold_s": 0.2, "gap_s": 0.2}, lead_s=0.1)
-    with _window(tmp_path, [cal], tail_s=0.5) as win:
+    with _window(tmp_path, [grasp_calibration_block({"hold_s": 0.5})], **TEXT_KW) as win:
         win._host_ns = ahead
         win.show()
         win.start_block()
-        deadline = time.monotonic() + cal.duration_s + 3
-        while win.running and time.monotonic() < deadline:
-            _spin(0.05)
+        _spin(0.2)
+        for _ in range(4):
+            _go(win)
+            _spin(0.5)  # the maximum ends by itself
+        _key(win, Qt.Key_Space)  # finish the block
+        _spin(0.5)
         assert not win.running
-    d = load_trial(_records(tmp_path)[0]["npz_path"])
-    with np.load(d.npz_path) as arrays:
-        start_s = (int(arrays["block_start_host_ns"]) - d.t0_ns) / 1e9
+    timed = timed_calibration.to_dict()  # its schedule, squeezed into this recording
+    for i, p in enumerate(timed["prompts"]):
+        p["onset_s"], p["duration_s"] = round(0.3 + 0.4 * i, 3), 0.2
+    cal = TextBlock.from_dict(timed)
+    rec = _records(tmp_path)[0]
+    rec["metadata"].update(sequence=timed, mode="timed")
+    (tmp_path / "s" / "trials.jsonl").write_text(json.dumps(rec) + "\n")
+    with np.load(rec["npz_path"]) as f:
+        arrays = dict(f)
+    start_ns = int(arrays["block_start_host_ns"])
+
+    def at(s: float) -> int:
+        return start_ns + round(s * 1e9)
+
+    begin = [0.0] + [p.offset_s for p in cal.prompts[:-1]]
+    attempts = [Attempt(i, at(b), at(b), at(p.onset_s), at(p.offset_s), TIMER, OK)
+                for i, (b, p) in enumerate(zip(begin, cal.prompts, strict=True))]  # fmt: skip
+    painted = {k: a.go_ns + 10_000_000 for k, a in enumerate(attempts)}
+    np.savez(rec["npz_path"], **{**arrays, **cal.block_arrays(attempts, start_ns, painted)})
+    d = load_trial(rec["npz_path"])
+    assert d.text_view.block == cal
+    start_s = (start_ns - d.t0_ns) / 1e9
     assert start_s > 0.2 and len(d.prompts) == len(cal.prompts)
     win = ReplayWindow(d, autoplay=False)
-    for i in (0, 1):
-        onset = start_s + cal.prompts[i].onset_s
+    for i, (p, mark) in enumerate(zip(cal.prompts, d.prompts, strict=True)):
+        onset, offset = start_s + p.onset_s, start_s + p.offset_s
+        # the mark: from Go as drawn to the end, the view's Go on the schedule
+        assert mark.label == p.label and mark.offset_s == pytest.approx(offset, abs=1e-6)
+        assert mark.onset_s == pytest.approx(onset + 0.01, abs=1e-6)
         win.seek(onset - 0.01)
         assert win.prompter.text_view.phase == PREVIEW and win.prompter.text_view.index == i
-        win.seek(onset + 0.01)
-        assert win.prompter.text_view.phase == GO and win.prompter.text_view.index == i
+        for t in (onset + 0.005, mark.onset_s + 0.001, offset - 0.01):
+            win.seek(t)
+            assert win.prompter.text_view.phase == GO and win.prompter.text_view.index == i
+    win.seek(start_s + cal.prompts[-1].offset_s + 0.01)
+    assert win.prompter.text_view.phase not in (PREVIEW, GO)  # no DONE: idle after the last
     win.close()

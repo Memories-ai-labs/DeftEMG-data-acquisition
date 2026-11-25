@@ -15,9 +15,10 @@ prompt with a fixed duration ends by itself (``end_reason`` "timer") unless Spac
 ``redo()`` voids the most recent attempt (under way, or just finished) and previews that prompt
 again; in the countdown it cancels. ``end_block()`` elsewhere ends the block early (incomplete).
 
-Timed blocks (the grasp calibration) run from their schedule: each prompt is previewed from the
-previous prompt's end (with the time left to its onset), then Go at its onset and the end at its
-offset. Space and ``redo()`` do nothing; ``end_block()`` ends early.
+Timed blocks (the grasp calibration of the first recordings, before it became self-paced) are
+not run any more, only replayed: ``text_view_at`` previews each prompt from the previous
+prompt's end (with the time left to its onset), then shows Go at its onset and the end at its
+offset. ``SelfPacedRunner`` rejects a timed block.
 
 Attempts: one per preview, in order; a redo or a cancel adds one. The attempt of a preview left
 by a ``redo()`` of the previous attempt is dropped (the new preview starts at that instant), so
@@ -26,7 +27,7 @@ preview. ``-1`` = did not happen.
 
 One clock, the injected ``host_ns`` (the monotonic host clock in use), drives the state machine
 and stamps the saved times, in integer ns, so the runner and ``text_view_at`` agree to the ns.
-Scheduled events (Go, a timer end, every timed event) get their scheduled host time, not the
+Scheduled events (Go, a timer end) get their scheduled host time, not the
 time the runner noticed them. A deadline is due at its time exactly: a key pressed at the same
 ns as a fixed duration's end finds the task already ended by the timer, as the view shows it.
 """
@@ -183,8 +184,8 @@ class SelfPacedRunner:
     """Runs one text block (see the module docstring); the block starts when this is made.
 
     ``host_ns`` (int ns; replaceable in tests) drives the state machine (countdown, debounce,
-    fixed durations, a timed block's schedule) and stamps the saved host times. Each key method
-    applies the events already due first.
+    fixed durations) and stamps the saved host times. Each key method applies the events already
+    due first. A timed block (only replayed now) raises ``ValueError``.
     """
 
     def __init__(
@@ -197,10 +198,10 @@ class SelfPacedRunner:
         host_ns: Callable[[], int] = _host_ns,
     ):
         n = len(block.prompts)
+        if block.mode == TIMED:
+            raise ValueError(f"{block.name}: a timed block can only be replayed, not run")
         if isinstance(start_index, bool) or not isinstance(start_index, int):
             raise ValueError(f"{block.name}: start_index must be an integer, got {start_index!r}")
-        if block.mode == TIMED and start_index != 0:
-            raise ValueError(f"{block.name}: a timed block always starts at prompt 0")
         if not 0 <= start_index < n:
             raise ValueError(f"{block.name}: start_index must be in 0..{n - 1}, got {start_index}")
         self.block = block
@@ -216,10 +217,7 @@ class SelfPacedRunner:
         self._markers: list[str] = []
         self._space_from = -math.inf  # host ns; Space is ignored before this (debounce)
         self.start_ns = host_ns()  # block_start_host_ns
-        if block.mode == TIMED:
-            self._update_timed(self.start_ns)
-        else:
-            self._preview(start_index, self.start_ns)
+        self._preview(start_index, self.start_ns)
 
     # --- events ---
 
@@ -248,14 +246,11 @@ class SelfPacedRunner:
 
     def update(self) -> None:
         """Apply the events due by now (the ``host_ns`` clock): Go after the countdown, a fixed
-        duration's end; a timed block's previews, Go and ends, and its finish."""
+        duration's end."""
         if not self.finished:
             self._update(self._host_ns())
 
     def _update(self, t: int) -> None:
-        if self.block.mode == TIMED:
-            self._update_timed(t)
-            return
         a = self.attempts[-1]
         if self.phase == COUNTDOWN and t >= a.countdown_ns + _ns(self.countdown_s):
             a.go_ns = a.countdown_ns + _ns(self.countdown_s)
@@ -266,44 +261,13 @@ class SelfPacedRunner:
         if self.phase == GO and duration is not None and t >= a.go_ns + _ns(duration):
             self._end(a.go_ns + _ns(duration), TIMER)
 
-    def _update_timed(self, t: int) -> None:
-        e, prompts = t - self.start_ns, self.block.prompts
-        while True:
-            a = self.attempts[-1] if self.attempts else None
-            if a is not None and a.status == "":
-                p = prompts[a.index]
-                if a.go_ns == -1:
-                    if e < _ns(p.onset_s):
-                        return
-                    a.go_ns = self.start_ns + _ns(p.onset_s)
-                    self.phase = GO
-                    self._mark("go", a)
-                    continue
-                if e < _ns(p.offset_s):
-                    return
-                self._stop(a, self.start_ns + _ns(p.offset_s), TIMER, OK)
-                self.phase = PREVIEW
-                continue
-            i = len(self.attempts)
-            if i == len(prompts):
-                self.phase, self.finished, self.completed = IDLE, True, True
-                return
-            begin = prompts[i - 1].offset_s if i else 0.0
-            if e < _ns(begin):
-                return
-            ns = self.start_ns + _ns(begin)
-            self.attempts.append(Attempt(i, ns, countdown_ns=ns))  # countdown = preview start
-            self._mark("preview", self.attempts[-1])
-            self._mark("countdown", self.attempts[-1])
-            self.phase = PREVIEW
-
     # --- keys ---
 
     def space(self) -> bool:
         """Space: start the countdown (preview), mark the end (Go), or finish the block (after
         the last end). Returns whether it did anything (ignored in the countdown, during the
-        debounce, in a timed block and once finished)."""
-        if self.finished or self.block.mode == TIMED:
+        debounce and once finished)."""
+        if self.finished:
             return False
         t = self._host_ns()
         self._update(t)
@@ -324,9 +288,8 @@ class SelfPacedRunner:
     def redo(self) -> bool:
         """``r``: void the most recent attempt (under way, or just finished: "redo"; in its
         countdown: "cancelled") and preview its prompt again. Returns whether it did anything
-        (not when the latest attempt is already voided, before the first, in a timed block or
-        once finished)."""
-        if self.finished or self.block.mode == TIMED:
+        (not when the latest attempt is already voided, before the first, or once finished)."""
+        if self.finished:
             return False
         ns = self._host_ns()
         self._update(ns)
@@ -374,9 +337,7 @@ class SelfPacedRunner:
     def resume_index(self) -> int:
         """Where a new run of this block would start: after the last prompt with an "ok"
         attempt in this run (prompt order is fixed, so they form a prefix), else where this run
-        started. A timed block never resumes (0)."""
-        if self.block.mode == TIMED:
-            return 0
+        started."""
         return max((a.index + 1 for a in self.attempts if a.status == OK),
                    default=self.start_index)  # fmt: skip
 

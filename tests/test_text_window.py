@@ -25,7 +25,6 @@ from deftemg_acquisition.tasks.textblock import (  # noqa: E402
     GRASP_CALIBRATION,
     TEXT_INT_ARRAYS,
     TEXT_STR_ARRAYS,
-    TIMED,
     TextBlock,
     TextPrompt,
     grasp_calibration_block,
@@ -101,6 +100,27 @@ def _do_prompt(win: TaskWindow, clock: Clock, task_s: float = 2.0) -> None:
     assert win.prompter.text_view.phase == GO
     clock.advance(task_s)
     _key(win, Qt.Key_Space)
+
+
+def _do_maximum(win: TaskWindow, clock: Clock) -> None:
+    """A grasp calibration maximum: Space after the end's debounce, the countdown to Go, and
+    the end by itself after the hold."""
+    clock.advance(1.5)
+    _key(win, Qt.Key_Space)
+    _wait(win, clock, 3.0)
+    view = win.prompter.text_view
+    assert view.phase == GO
+    _wait(win, clock, view.prompt.duration_s)
+
+
+def _run_calibration(win: TaskWindow, clock: Clock) -> None:
+    """The running grasp calibration to its end: each maximum, Space at DONE, the tail."""
+    for _ in win.sequence.prompts:
+        _do_maximum(win, clock)
+    assert win.running and win.prompter.text_view.phase == DONE
+    clock.advance(1.5)
+    _key(win, Qt.Key_Space)
+    _wait(win, clock, TAIL_S)
 
 
 def _records(tmp_path) -> list[dict]:
@@ -260,38 +280,49 @@ def test_esc_after_the_last_end_saves_complete_then_quits(tmp_path):
     assert len(recs) == 1 and recs[0]["metadata"]["completed"] is True
 
 
-def test_grasp_calibration_runs_from_its_schedule(tmp_path):
+def test_grasp_calibration_is_operator_started(tmp_path):
     clock = Clock()
     cal = grasp_calibration_block()
     with _window(tmp_path, [cal, _grasp_block()], clock) as win:
         n = len(cal.prompts)
-        assert f"{n} grasps, {cal.duration_s + TAIL_S:.0f} s" in win.prompter.message
+        assert f"{n} prompts, about 1 min" in win.prompter.message
         win.start_block()
         start = clock.ns
-        _wait(win, clock, cal.prompts[0].onset_s - 1.0)
-        assert win.prompter.text_view.phase == PREVIEW
-        assert win.prompter.text_view.countdown_left == pytest.approx(1.0)
-        _key(win, Qt.Key_Space)  # nothing in a timed block
-        _key(win, Qt.Key_R)
-        _wait(win, clock, 1.0)
+        _wait(win, clock, 5.0)  # waits for the operator, however long
+        assert win.prompter.text_view.phase == PREVIEW and win.prompter.text_view.index == 0
+        _key(win, Qt.Key_Space)
+        _wait(win, clock, 3.0)
         assert win.prompter.text_view.phase == GO
-        _wait(win, clock, cal.duration_s - cal.prompts[0].onset_s)  # at the last end
-        assert win.running and win.prompter.text_view.phase == IDLE
-        _wait(win, clock, TAIL_S - 0.01)
-        assert win.running
-        _wait(win, clock, 0.01)
+        _wait(win, clock, 1.5)  # ends by itself after the hold
+        assert win.prompter.text_view.phase == PREVIEW and win.prompter.text_view.index == 1
+        clock.advance(1.5)
+        _key(win, Qt.Key_R)  # redo the first maximum
+        assert win.prompter.text_view.phase == PREVIEW and win.prompter.text_view.index == 0
+        for _ in range(n):
+            _do_maximum(win, clock)
+        # after the last maximum the block waits at DONE, like every text block
+        _wait(win, clock, 10.0)
+        assert win.running and win.prompter.text_view.phase == DONE
+        _key(win, Qt.Key_Space)
+        _wait(win, clock, TAIL_S)
         assert not win.running and win.completed == {0} and win.current == 1
     rec = _records(tmp_path)[0]
-    assert rec["metadata"]["task_set"] == "grasp_calibration" and rec["metadata"]["mode"] == "timed"
-    assert rec["metadata"]["completed"] is True
+    meta = rec["metadata"]
+    assert meta["task_set"] == "grasp_calibration" and meta["mode"] == "self_paced"
+    assert meta["completed"] is True
     data = np.load(rec["npz_path"])
-    onsets = np.array([round(p.onset_s * S) for p in cal.prompts])
-    assert data["text_status"].tolist() == ["ok"] * n
-    assert data["text_end_reason"].tolist() == ["timer"] * n
-    offsets = np.array([round(p.offset_s * S) for p in cal.prompts])
-    assert (data["text_go_host_ns"] - start == onsets).all()
-    assert (data["text_end_host_ns"] - start == offsets).all()
-    assert (data["text_preview_host_ns"] == data["text_countdown_host_ns"]).all()
+    assert data["text_prompt_index"].tolist() == [0, 0, 1, 2, 3]
+    assert data["text_status"].tolist() == ["redo"] + ["ok"] * n
+    assert data["text_end_reason"].tolist() == ["timer"] * (n + 1)
+    assert data["text_preview_host_ns"][0] == start
+    holds = data["text_end_host_ns"] - data["text_go_host_ns"]
+    assert (holds == round(1.5 * S)).all()
+
+
+def test_a_timed_block_is_rejected_at_window_construction(tmp_path, timed_calibration):
+    with pytest.raises(ValueError, match="timed text block can only be replayed"):
+        with _window(tmp_path, [_grasp_block(), timed_calibration]):
+            pass
 
 
 def test_closing_mid_block_saves_one_incomplete_trial_with_its_markers(tmp_path):
@@ -417,9 +448,8 @@ def _run(win: TaskWindow, clock: Clock, now: list[float], at: float) -> str:
     block = win.sequence
     win.start_block()
     assert win.running, f"{block.name} did not start"
-    if isinstance(block, TextBlock) and block.mode == TIMED:
-        _wait(win, clock, block.duration_s)
-        _wait(win, clock, TAIL_S)
+    if isinstance(block, TextBlock) and block.is_calibration:
+        _run_calibration(win, clock)
     elif isinstance(block, TextBlock):
         for _ in block.prompts:
             _do_prompt(win, clock)
@@ -455,7 +485,11 @@ def test_each_kind_of_block_gets_its_own_kind_of_calibration(tmp_path):
         assert "Calibration due (11 min since the last one)" in win.prompter.message
         assert _run(win, clock, now, 650) == "calibration_pinch"
         assert _run(win, clock, now, 700) == "b" and win.sequence is t2  # grasp: 500 s
-        now[0] = 800  # 600 s after the grasp calibration: the next one is due
+        # 600 s after the grasp calibration's first Go (204.5 s: debounce and countdown after
+        # its Shift at 200 s): the next one is due
+        now[0] = 804
+        assert win._calibration_due(app.GRASP) is None
+        now[0] = 805
         win.start_block()
         assert not win.running and win.sequence.task_set == GRASP_CALIBRATION
         assert "Calibration due (10 min since the last one)" in win.prompter.message
@@ -476,12 +510,12 @@ def test_each_kind_of_block_gets_its_own_kind_of_calibration(tmp_path):
 def test_a_first_text_block_gets_its_grasp_calibration_first(tmp_path):
     clock = Clock()
     block = _grasp_block(n=1)
-    block.params["calibration"] = {"swap_gap_s": 2.0}
+    block.params["calibration"] = {"hold_s": 2.0}
     with _window(tmp_path, [block, _lane("a")], clock, recalibrate_s=[600, 1200]) as win:
         now = _session_clock(win)
         cal = win.sequence
         assert cal.task_set == GRASP_CALIBRATION and len(win.sequences) == 3
-        assert cal.params["calibration"]["swap_gap_s"] == 2.0  # the block's overrides
+        assert cal.params["calibration"]["hold_s"] == 2.0  # the block's overrides
         assert "Calibration due (no calibration of this kind yet)" in win.prompter.message
         _key(win, Qt.Key_Right)  # skipped: the text block still needs one
         assert win.sequence is block
@@ -497,6 +531,24 @@ def test_a_first_text_block_gets_its_grasp_calibration_first(tmp_path):
     # Without recalibrate_s (no calibrations), nothing is added
     with _window(tmp_path / "none", [_grasp_block(n=1)], clock) as win:
         assert len(win.sequences) == 1 and win.sequence.name == "tuna_can"
+
+
+def test_the_grasp_calibration_clock_starts_at_its_first_go(tmp_path):
+    """A grasp calibration can wait at its first preview (objects to set out): the next is due
+    ``recalibrate_s[0]`` after its first Go, not after its Shift."""
+    clock = Clock()
+    with _window(tmp_path, [_grasp_block(n=1), _lane("a")], clock, recalibrate_s=[600]) as win:
+        now = _session_clock(win)
+        now[0] = 100
+        win.start_block()
+        assert win.sequence.task_set == GRASP_CALIBRATION
+        clock.advance(300)  # five minutes at the first preview
+        _run_calibration(win, clock)  # Space 1.5 s later, Go after the countdown: 404.5 s
+        assert win._last_calibration[app.GRASP] == pytest.approx(404.5)
+        now[0] = 1004
+        assert win._calibration_due(app.GRASP) is None
+        now[0] = 1005
+        assert win._calibration_due(app.GRASP) == "10 min since the last one"
 
 
 def _grasp_calibrations(win: TaskWindow) -> list[int]:
@@ -815,13 +867,11 @@ def test_a_calibration_due_before_a_resume_keeps_the_resume_point(tmp_path):
         _key(win, Qt.Key_Shift)
         assert not win.running and win.sequence.task_set == GRASP_CALIBRATION
         assert _grasp_calibrations(win) == [0, 1] and win.sequences[2][1] is block
-        cal = win.sequence
         win.start_block()
         assert win._runner.start_index == 0  # a calibration never resumes
         win.end_block(completed=False)
         win.start_block()
-        _wait(win, clock, cal.duration_s)
-        _wait(win, clock, TAIL_S)
+        _run_calibration(win, clock)
         assert not win.running and win.sequence is block and list(win._resume) == [id(block)]
         assert "Resumes at prompt 2 of 3" in win.prompter.message
         win.start_block()  # resumes at prompt 2, not prompt 1
@@ -839,14 +889,14 @@ def test_an_ended_early_grasp_calibration_restarts_at_its_first_prompt(tmp_path)
     cal = grasp_calibration_block()
     with _window(tmp_path, [cal, _grasp_block()], clock) as win:
         win.start_block()
-        _wait(win, clock, cal.prompts[1].offset_s + 0.1)  # two grasps done
+        _do_maximum(win, clock)
+        _do_maximum(win, clock)  # two grasps done
         _key(win, Qt.Key_Return)
         assert not win.running and win.current == 0 and not win._resume
         assert "Resumes" not in win.prompter.message
         win.start_block()
         assert win.running and win._runner.start_index == 0
-        _wait(win, clock, cal.prompts[0].onset_s)
-        assert win.prompter.text_view.phase == GO and win.prompter.text_view.index == 0
+        assert win.prompter.text_view.phase == PREVIEW and win.prompter.text_view.index == 0
         _key(win, Qt.Key_Return)
     recs = _records(tmp_path)
     assert [_resume_meta(r) for r in recs] == [(False, 0, None), (False, 0, None)]

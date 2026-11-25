@@ -12,13 +12,14 @@ A block ends by itself ``tail_s`` after its last prompt and the next block becom
 
 Text blocks (``textblock.TextBlock``, run by ``selfpaced.SelfPacedRunner``) are drawn in the
 prompter's text mode and saved with ``task="text_prompter"`` and ``text_*`` arrays (no
-``prompt_*`` arrays, ``scroll_start_host_ns`` or effort trace). In a self-paced block, Space
-starts each prompt's countdown (``countdown_s``) and marks its end, and ``r`` redoes the last
-prompt; after the last end, Space (or Enter or Esc, which then save the block as complete; Esc
-also quits) finishes the block ``tail_s`` later. Closing the window then saves it as complete
-at once, with no tail (Esc waits ``tail_s`` first). Enter before that ends the block early, as
-for a lane block. A timed text block (the grasp calibration) runs from its schedule and ends by
-itself ``tail_s`` after its last prompt. Markers: ``text|preview|i``, ``text|countdown|i``,
+``prompt_*`` arrays, ``scroll_start_host_ns`` or effort trace). Space starts each prompt's
+countdown (``countdown_s``) and marks its end (a prompt with a fixed duration, such as a grasp
+calibration maximum, also ends by itself), and ``r`` redoes the last prompt; after the last
+end, Space (or Enter or Esc, which then save the block as complete; Esc also quits) finishes
+the block ``tail_s`` later. Closing the window then saves it as complete at once, with no tail
+(Esc waits ``tail_s`` first). Enter before that ends the block early, as for a lane block.
+Timed text blocks (the old grasp calibration) are only replayed: the window rejects them.
+Markers: ``text|preview|i``, ``text|countdown|i``,
 ``text|go|i|<label>``, ``text|end|i``; the sync patch flashes at each Go.
 
 Resume: Shift on a self-paced text block that was ended early starts a new trial at the prompt
@@ -28,15 +29,16 @@ left. Each text block trial's metadata has ``text_resume_from`` (the first promp
 a fresh run) and, for a resumed run, ``text_resumed_trial`` (the npz file name, without
 extension, of the run just before; set even when that run had no "ok" attempt), so a block's
 trials form a chain; ``text_prompt_index`` stays an index into the whole block. A block that
-completes forgets where it stopped, so redoing a done block starts at its first prompt. Timed
-blocks (the grasp calibration) always start at their first prompt. Resume state lives in the
-window only: after a restart a block starts at its first prompt.
+completes forgets where it stopped, so redoing a done block starts at its first prompt. The
+grasp calibration always starts at its first prompt. Resume state lives in the window only:
+after a restart a block starts at its first prompt.
 
 Recalibration (``recalibrate_s``, e.g. [600, 1200]) keeps two clocks: ``lane`` for the press,
 pinch and squeeze calibrations (before lane blocks) and ``grasp`` for the grasp calibration
 (before text blocks); one kind never counts for the other. Once a calibration block of a kind
-has been done, the next one of that kind is due ``recalibrate_s[0]`` s after it started, later
-ones every ``recalibrate_s[-1]`` s. A text block also needs a grasp calibration before it if
+has been done, the next one of that kind is due ``recalibrate_s[0]`` s after it started (a
+grasp calibration: at its first Go, since it may wait at its first preview), later ones every
+``recalibrate_s[-1]`` s. A text block also needs a grasp calibration before it if
 none has been done yet this session (a lane block does not: the session's first lane
 calibration is put in by whoever builds the list, so a skipped or early-ended one forces
 nothing). A due calibration block (``textblock.calibration_for_block``: like the block it comes
@@ -195,6 +197,8 @@ class TaskWindow(QtWidgets.QMainWindow):
             raise ValueError("no sequences to run")
         self.conditions = dict(conditions or {})
         for _, block in sequences:  # fail now, not when the block comes up mid-session
+            if isinstance(block, TextBlock) and block.mode == TIMED:
+                raise ValueError(f"{block.name}: a timed text block can only be replayed, not run")
             missing = [c for c in block_conditions(block) if c not in self.conditions]
             if missing:
                 given = ", ".join(self.conditions) or "none"
@@ -348,9 +352,7 @@ class TaskWindow(QtWidgets.QMainWindow):
         place = block.params.get("object_name")
         n = len(block.prompts)
         resume = self.resume_point(block)
-        if block.mode == TIMED:
-            length = f"{n} grasps, {block.duration_s + self.tail_s:.0f} s"
-        elif resume is None:
+        if resume is None:
             length = f"{n} prompts, about {max(1, round(block.estimate_s() / 60))} min"
         else:  # only what is left
             k = resume.resume_index
@@ -379,7 +381,7 @@ class TaskWindow(QtWidgets.QMainWindow):
     def _note_resume(self, block: TextBlock, completed: bool, resume_index: int,
                      npz_path: str) -> None:  # fmt: skip
         """A text block's run was saved: remember where it resumes, or forget it once done."""
-        if completed or block.mode == TIMED or block.is_calibration:
+        if completed or block.is_calibration:
             self._resume.pop(id(block), None)
         else:
             self._resume[id(block)] = ResumePoint(block, resume_index, Path(npz_path).stem)
@@ -510,8 +512,8 @@ class TaskWindow(QtWidgets.QMainWindow):
                                    host_ns=self._host_ns)  # fmt: skip
 
         # Built once before the trial starts, so a bad start index or setting raises with no
-        # trial open, and again after it, so the block starts (its first preview, a timed
-        # block's schedule) once recording has begun
+        # trial open, and again after it, so the block starts (its first preview) once
+        # recording has begun
         runner()
         self.session.start_trial(
             label=block.name,
@@ -596,6 +598,9 @@ class TaskWindow(QtWidgets.QMainWindow):
 
     def _end_text_block(self, elapsed: float) -> None:
         runner = self._runner
+        go_ns = next((a.go_ns for a in runner.attempts if a.go_ns >= 0), None)
+        if go_ns is not None:  # the recalibration clock starts at the first Go, not at Shift
+            self._block_start += (go_ns - runner.start_ns) / 1e9
         arrays, completed = self._text_arrays()
         block = self.sequence
         self._plugins("block_ending", block, arrays)
@@ -697,16 +702,12 @@ class TaskWindow(QtWidgets.QMainWindow):
 
     def _text_step(self) -> None:
         """Advance the running text block: apply its due events, show it, send its markers, and
-        save it ``tail_s`` after it finished (a timed block: after its last prompt's end)."""
+        save it ``tail_s`` after it finished."""
         runner = self._runner
         runner.update()
         now = self._host_ns()
         if runner.finished and runner.completed and self._finish_at_ns is None:
-            if runner.block.mode == TIMED:  # from the scheduled end, as lane blocks do
-                end = runner.start_ns + round(runner.block.duration_s * 1e9)
-            else:
-                end = now
-            self._finish_at_ns = end + round(self.tail_s * 1e9)
+            self._finish_at_ns = now + round(self.tail_s * 1e9)
         # A finished block shows nothing while its tail is recorded
         self.prompter.text_view = TextView(IDLE) if runner.finished else runner.view()
         for marker in runner.markers():

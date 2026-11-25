@@ -230,6 +230,19 @@ def test_an_unanswered_condition_stops_before_the_session_opens(task_set, tmp_pa
     assert not any(tmp_path.iterdir())  # no session folder
 
 
+def test_a_timed_block_file_stops_before_the_session_opens(
+    timed_calibration, tmp_path, monkeypatch
+):
+    path = tmp_path / "blocks" / "old_calibration.json"
+    path.parent.mkdir()
+    timed_calibration.save(path)
+    data = tmp_path / "data"
+    with pytest.raises(SystemExit, match=r"old_calibration\.json: a timed block can only be "
+                       r"replayed, not run"):  # fmt: skip
+        _main(monkeypatch, ["--simulate", "--data-dir", str(data), str(path)])
+    assert not data.exists()  # no session folder
+
+
 def test_a_recording_with_a_text_block_replays_as_the_armband(tmp_path, monkeypatch):
     path = tmp_path / "t.json"
     _text("t").save(path)

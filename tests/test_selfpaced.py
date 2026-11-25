@@ -406,10 +406,9 @@ def test_start_index_outside_the_block_raises(bad):
         _runner(start_index=bad)
 
 
-@pytest.mark.parametrize("bad", [1, 3, -1])
-def test_timed_block_only_starts_at_zero(bad):
-    with pytest.raises(ValueError, match="timed"):
-        _runner(grasp_calibration_block(), start_index=bad)
+def test_a_timed_block_is_rejected(timed_calibration):
+    with pytest.raises(ValueError, match="timed block can only be replayed"):
+        _runner(timed_calibration)
 
 
 @pytest.mark.parametrize("kw", [{"countdown_s": -1}, {"go_debounce_s": float("nan")}])
@@ -461,52 +460,83 @@ def test_arrays_of_no_attempts_keep_their_dtypes():
     assert all(arrays[k].dtype.kind == "U" and arrays[k].size == 0 for k in TEXT_STR_ARRAYS)
 
 
-# --- timed blocks ---
+# --- the grasp calibration ---
 
 
-def test_timed_block_produces_go_and_end_at_the_scheduled_times():
+def test_grasp_calibration_runs_like_a_self_paced_block():
+    """Each maximum: preview, Space, countdown, Go, ends by itself after hold_s; the next is
+    previewed (the object swap is the ball's preview); r redoes one; Space at DONE finishes."""
     block = grasp_calibration_block()
     r, c = _runner(block)
-    assert not r.space() and not r.redo()
-    for t in np.arange(0.0, block.duration_s + 0.5, 0.1):
-        at(r, c, float(t))
-    assert r.finished and r.completed and r.phase == IDLE
-    prompts = block.prompts
-    begin = [0.0] + [p.offset_s for p in prompts[:-1]]
-    assert _col(r, "text_go_host_ns") == [ns(p.onset_s) for p in prompts]
-    assert _col(r, "text_end_host_ns") == [ns(p.offset_s) for p in prompts]
-    assert _col(r, "text_preview_host_ns") == [ns(b) for b in begin]
-    assert _col(r, "text_countdown_host_ns") == _col(r, "text_preview_host_ns")
-    assert set(_col(r, "text_end_reason")) == {TIMER} and set(_col(r, "text_status")) == {OK}
-    assert r.resume_index() == 0
+    assert r.view().phase == PREVIEW and r.space()  # Space starts the countdown
+    assert at(r, c, 2.9).phase == COUNTDOWN
+    v = at(r, c, 3.5).view()
+    assert (v.phase, v.index) == (GO, 0) and v.time_left == pytest.approx(1.0)
+    v = at(r, c, 4.5).view()  # Go at 3.0, the 1.5 s hold ended at 4.5
+    assert (r.phase, v.phase, v.index) == (PREVIEW, PREVIEW, 1)
+    assert r.attempts[0].end_ns == ns(4.5) and r.attempts[0].end_reason == TIMER
+    assert _do(r, c, 5.0, "r")  # redo the first maximum
+    t = 5.0
+    for _ in range(len(block.prompts)):
+        assert _do(r, c, t + 1.0, "space")
+        at(r, c, t + 1.0 + 3.0 + 1.5)
+        t += 1.0 + 3.0 + 1.5
+    assert r.phase == DONE and not r.finished
+    assert _do(r, c, t + 1.0, "space") and r.finished and r.completed
+    assert _col(r, "text_prompt_index") == [0, 0, 1, 2, 3]
+    assert _col(r, "text_status") == [REDO, OK, OK, OK, OK]
+    assert _col(r, "text_end_reason") == [TIMER] * 5
+    assert r.resume_index() == 4
 
 
-def test_timed_block_views_follow_the_schedule():
-    block = grasp_calibration_block()
-    first = block.prompts[0]
-    r, c = _runner(block)
-    v = at(r, c, first.onset_s - 1.25).view()
+def test_space_ends_a_maximum_early_after_the_debounce():
+    r, c = _runner(grasp_calibration_block())
+    _do(r, c, 0.0, "space")  # Go at 3.0
+    assert not _do(r, c, 3.5, "space")  # debounce: 1.0 s after Go
+    assert _do(r, c, 4.2, "space")  # before the 1.5 s hold is up
+    assert r.attempts[0].end_reason == OPERATOR and r.attempts[0].end_ns == ns(4.2)
+
+
+def _timed_attempts(block: TextBlock) -> list[Attempt]:
+    """The attempts the old timed runner saved: each previewed (and counted down) from the
+    previous prompt's end, Go at its onset, the end at its offset."""
+    begin = [0.0] + [p.offset_s for p in block.prompts[:-1]]
+    return [Attempt(i, ns(b), ns(b), ns(p.onset_s), ns(p.offset_s), TIMER, OK)
+            for i, (b, p) in enumerate(zip(begin, block.prompts, strict=True))]  # fmt: skip
+
+
+def test_a_saved_timed_calibration_replays_on_its_schedule(timed_calibration):
+    block = timed_calibration
+    attempts = _timed_attempts(block)
+    first, last = block.prompts[0], block.prompts[-1]
+
+    def view(t):
+        return text_view_at(block, attempts, ns(t), start_ns=HOST0)
+
+    v = view(first.onset_s - 1.25)
     assert (v.phase, v.index, v.attempt) == (PREVIEW, 0, 0)
     assert v.countdown_left == pytest.approx(1.25)
-    v = at(r, c, first.onset_s + 0.5).view()
-    assert (v.phase, v.attempt, r.phase) == (GO, 0, GO)
+    v = view(first.onset_s + 0.5)
+    assert (v.phase, v.index, v.attempt) == (GO, 0, 0)
     assert v.time_left == pytest.approx(first.duration_s - 0.5)
-    assert r.markers()[:3] == ["text|preview|0", "text|countdown|0", "text|go|0|hardcover_book:TI"]
+    v = view(first.offset_s)
+    assert (v.phase, v.index) == (PREVIEW, 1) and v.countdown_left > 0
+    assert view(last.offset_s).phase == IDLE  # after its last prompt: no DONE
+    assert view(-0.1).phase == IDLE
 
 
 @pytest.mark.parametrize("during", ["preview", "go"])
-def test_timed_block_ends_early(during):
-    block = grasp_calibration_block()
-    p = block.prompts[1]
+def test_a_saved_timed_calibration_ended_early_replays_idle(timed_calibration, during):
+    p = timed_calibration.prompts[1]
     t = p.onset_s - 0.5 if during == "preview" else p.onset_s + 0.5
-    r, c = _runner(block)
-    at(r, c, t)
-    assert r.end_block() is False and r.finished and not r.completed
-    assert _col(r, "text_status") == [OK, INCOMPLETE]
-    a = r.attempts[-1]
-    assert a.end_reason == BLOCK_END and a.end_ns == ns(t)
-    assert (a.go_ns == -1) == (during == "preview")
-    assert r.view().phase == IDLE
+    attempts = _timed_attempts(timed_calibration)[:2]
+    a = attempts[1]
+    a.end_ns, a.end_reason, a.status = ns(t), BLOCK_END, INCOMPLETE
+    if during == "preview":
+        a.go_ns = -1
+    view = text_view_at(timed_calibration, attempts, ns(t - 0.1), start_ns=HOST0)
+    assert view.phase == (PREVIEW if during == "preview" else GO)
+    assert text_view_at(timed_calibration, attempts, ns(t), start_ns=HOST0).phase == IDLE
 
 
 # --- live and replayed views agree ---
@@ -543,9 +573,7 @@ def test_live_view_agrees_with_the_replayed_view(make):
         seen.append((clock.host_ns(), v))
     r.end_block()
     phases = {v.phase for _, v in seen}
-    assert phases == (
-        {PREVIEW, GO, IDLE} if block.mode == "timed" else {PREVIEW, COUNTDOWN, GO, DONE}
-    )
+    assert phases == {PREVIEW, COUNTDOWN, GO, DONE}
     assert any(v.time_left is not None for _, v in seen) == (make is not _grasp_block)
     for t_ns, v in seen:
         assert v.conditions == "bottle: filled"
@@ -554,13 +582,12 @@ def test_live_view_agrees_with_the_replayed_view(make):
         assert _replayed(r, t_ns) == v, (t_ns - HOST0) / 1e9
 
 
-def test_view_before_the_block_starts_is_idle():
+def test_view_before_the_block_starts_is_idle(timed_calibration):
     r, _ = _runner()
     assert text_view_at(r.block, r.attempts, HOST0 - 1).phase == IDLE
-    cal = grasp_calibration_block()
-    assert text_view_at(cal, [], HOST0 - 1, start_ns=HOST0).phase == IDLE
+    assert text_view_at(timed_calibration, [], HOST0 - 1, start_ns=HOST0).phase == IDLE
     with pytest.raises(ValueError, match="start_ns"):
-        text_view_at(cal, [], HOST0)
+        text_view_at(timed_calibration, [], HOST0)
 
 
 def test_view_after_an_end_previews_the_next_prompt_with_its_row():

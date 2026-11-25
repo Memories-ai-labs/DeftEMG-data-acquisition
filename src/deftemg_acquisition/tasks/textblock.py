@@ -2,8 +2,10 @@
 
 A text block is one block of written prompts ("Tuna can, from the top / Thumb-index grasp /
 Light grasp"), recorded as one trial, like a lane block (``sequence.Sequence``). Most blocks
-are self-paced: the operator starts each prompt and marks its end. The grasp calibration is
-timed: each brief maximum grasp has an onset and a duration, as in a lane calibration.
+are self-paced: the operator starts each prompt and marks its end, or a prompt with a fixed
+duration ends by itself, as each brief maximum of the grasp calibration does. Timed blocks
+(each prompt has an onset and a duration) are the grasp calibrations of the first recordings;
+they still load and replay, but are no longer made or run.
 
 A block file is self-contained: each prompt carries the text the prompter shows, so a block
 does not need the catalogue it was generated from. Its JSON has ``"kind": "text_block"``;
@@ -26,7 +28,7 @@ TASK = "text_prompter"  # the trial's ``task``; lane blocks are "scroll_prompter
 GRASP_CALIBRATION = "grasp_calibration"  # not sequence.CALIBRATION: press analysis skips it
 TASK_SETS = ("grasp", "natural", GRASP_CALIBRATION)
 SELF_PACED = "self_paced"  # the operator starts each prompt and marks its end
-TIMED = "timed"  # each prompt has an onset and a duration (the grasp calibration)
+TIMED = "timed"  # each prompt has an onset and a duration (old grasp calibrations; replay only)
 MODES = (SELF_PACED, TIMED)
 BLOCK_KEYS = ("kind", "name", "task", "task_set", "mode", "prompts")  # JSON; "params" optional
 # Timed onsets are rounded to the millisecond, so a prompt may start this much before the
@@ -43,15 +45,11 @@ HAND = "hand"  # highlight the whole hand (a power grasp) instead of fingertips
 COUNTDOWN_S = 3.0
 RESET_S = 5.0  # the operator's Space for the end, the reset, the next Space
 
-# The grasp calibration: rest, then one brief maximum of each grasp type, timed like the lane
-# calibration (``sequence.calibration_sequence``), with a longer pause wherever the next maximum
-# is on a different object, to swap objects. A catalogue's ``[calibration]`` table (embedded in
-# each block's ``params["calibration"]``) overrides any of these.
+# The grasp calibration: one brief maximum of each grasp type, each started by the operator
+# and held for ``hold_s``. A catalogue's ``[calibration]`` table (embedded in each block's
+# ``params["calibration"]``) overrides any of these.
 CALIBRATION_DEFAULTS = {
-    "rest_s": 3.0,
     "hold_s": 1.5,
-    "gap_s": 3.0,
-    "swap_gap_s": 6.0,  # added to gap_s before a maximum on another object
     "maxima": [
         {
             "grasp": "TI",
@@ -78,6 +76,9 @@ CALIBRATION_DEFAULTS = {
     ],
 }
 CALIBRATION_KEYS = tuple(CALIBRATION_DEFAULTS)
+# The timed calibration's spacing, in the ``params["calibration"]`` of blocks saved before it
+# became self-paced: accepted there and dropped (a catalogue rejects them)
+LEGACY_CALIBRATION_KEYS = ("rest_s", "gap_s", "swap_gap_s")
 MAXIMUM_KEYS = ("grasp", "object", "text")  # each of ``maxima``; "highlight" is optional
 # What the hand outline highlights for the default grasp types, for maxima that don't say.
 GRASP_HIGHLIGHTS = {
@@ -86,12 +87,7 @@ GRASP_HIGHLIGHTS = {
     "AD": DIGITS,
     "Power": HAND,
 }
-GRASP_CALIBRATION_INSTRUCTIONS = (
-    "Rest quietly until the first grasp is due. Then grasp the named object with the grasp "
-    "shown, briefly and as hard as is comfortable, and relax fully in between. When the next "
-    "grasp names a different object, swap objects during the longer pause. Rest a minute "
-    "before the next block."
-)
+GRASP_CALIBRATION_TASK = "brief maximum grasps, as hard as is comfortable"  # params["start"]
 
 
 def _seconds(v, where: str, positive: bool = False) -> float:
@@ -196,8 +192,6 @@ class TextBlock:
             )
         if self.mode not in MODES:
             raise ValueError(f"{self.name}: mode must be one of {MODES}, got {self.mode!r}")
-        if self.task_set == GRASP_CALIBRATION and self.mode != TIMED:
-            raise ValueError(f"{self.name}: a {GRASP_CALIBRATION} block must be {TIMED!r}")
         if not isinstance(self.prompts, list) or not self.prompts:
             raise ValueError(f"{self.name}: a text block needs a list of at least one prompt")
         if not all(isinstance(p, TextPrompt) for p in self.prompts):
@@ -234,28 +228,17 @@ class TextBlock:
     def is_calibration(self) -> bool:
         return self.task_set == GRASP_CALIBRATION
 
-    @property
-    def duration_s(self) -> float | None:
-        """A timed block's length (the end of its last prompt); None for a self-paced block,
-        whose length is up to the operator."""
-        if self.mode != TIMED:
-            return None
-        return max(p.offset_s for p in self.prompts)
-
     def estimate_s(self, start_index: int = 0) -> float:
         """Estimated length (s) from prompt ``start_index`` on (a resumed block counts only its
-        remaining prompts; ``ValueError`` outside ``0..N-1``). Timed: its duration, and
-        ``start_index`` must be 0 (a timed block never resumes). Self-paced: per prompt, the
-        countdown, the task (a fixed duration, else ``est_s``, else 0) and the reset
+        remaining prompts; ``ValueError`` outside ``0..N-1``, and for a timed block): per
+        prompt, the countdown, the task (a fixed duration, else ``est_s``, else 0) and the reset
         (``params["timing"]``'s ``countdown_s`` and ``reset_s``, else ``COUNTDOWN_S`` and
         ``RESET_S``)."""
         n = len(self.prompts)
+        if self.mode == TIMED:
+            raise ValueError(f"{self.name}: a timed block has no estimate (it is only replayed)")
         if isinstance(start_index, bool) or not isinstance(start_index, int):
             raise ValueError(f"{self.name}: start_index must be an integer, got {start_index!r}")
-        if self.mode == TIMED:
-            if start_index != 0:
-                raise ValueError(f"{self.name}: a timed block always starts at prompt 0")
-            return self.duration_s
         if not 0 <= start_index < n:
             raise ValueError(f"{self.name}: start_index must be in 0..{n - 1}, got {start_index}")
         timing = self.params.get("timing", {})
@@ -351,18 +334,19 @@ def load_block(path: Path) -> Sequence | TextBlock:
 def calibration_settings(overrides: dict | None = None) -> dict:
     """The grasp calibration's settings: ``CALIBRATION_DEFAULTS`` with ``overrides`` (a
     catalogue's ``[calibration]`` table, or a block's ``params["calibration"]``) applied,
-    checked. Unknown keys raise ``ValueError`` (a misspelt ``hold_s`` is not ignored). Each
-    maximum gets a ``highlight``: its own, else ``GRASP_HIGHLIGHTS`` for its grasp type."""
+    checked. Unknown keys raise ``ValueError`` (a misspelt ``hold_s`` is not ignored), except
+    ``LEGACY_CALIBRATION_KEYS``, which are dropped. Each maximum gets a ``highlight``: its own,
+    else ``GRASP_HIGHLIGHTS`` for its grasp type."""
     overrides = {} if overrides is None else overrides
     if not isinstance(overrides, dict):
         raise ValueError(f"calibration: expected a table, got {overrides!r}")
+    overrides = {k: v for k, v in overrides.items() if k not in LEGACY_CALIBRATION_KEYS}
     unknown = sorted(set(overrides) - set(CALIBRATION_KEYS))
     if unknown:
         known = ", ".join(CALIBRATION_KEYS)
         raise ValueError(f"calibration: unknown key(s) {', '.join(unknown)} (known: {known})")
     d = {**CALIBRATION_DEFAULTS, **overrides}
-    out = {k: _seconds(d[k], f"calibration.{k}", positive=k == "hold_s") for k in CALIBRATION_KEYS
-           if k != "maxima"}  # fmt: skip
+    out = {"hold_s": _seconds(d["hold_s"], "calibration.hold_s", positive=True)}
     if not isinstance(d["maxima"], list) or not d["maxima"]:
         raise ValueError(f"calibration.maxima: expected a non-empty list, got {d['maxima']!r}")
     maxima = []
@@ -392,20 +376,15 @@ def calibration_settings(overrides: dict | None = None) -> dict:
 
 
 def grasp_calibration_block(
-    overrides: dict | None = None, reps: int = CALIBRATION_REPS, lead_s: float = 1.0
+    overrides: dict | None = None, reps: int = CALIBRATION_REPS
 ) -> TextBlock:
-    """The grasp calibration: a timed block of brief maximum grasps (about 25 s by default).
-
-    ``lead_s`` + ``rest_s`` of quiet rest, then each of ``maxima`` for ``hold_s``, "as hard as
-    is comfortable", ``gap_s`` apart, as in the lane calibration: by default thumb-index,
-    thumb-index-middle and all-fingertips on a hardcover book, then power on a ball. Where the
-    object changes, ``swap_gap_s`` is added to the gap, so the subject can put one object down
-    and pick up the next while the prompter previews it. Consecutive maxima on the same object
-    form a group; with ``reps`` above 1 each group is repeated ``reps`` times before the swap,
-    so there are no extra swaps, and two maxima of the same grasp type in a row (power, power)
-    get ``rest_s`` added to their gap, so the same muscles are not asked for a maximum again
-    after only ``gap_s``. With ``reps`` 1 and the default maxima no grasp type repeats.
-    ``overrides`` as in ``calibration_settings``.
+    """The grasp calibration: a self-paced block of brief maximum grasps, "as hard as is
+    comfortable", each started by the operator and ending by itself after ``hold_s``: by default
+    thumb-index, thumb-index-middle and all-fingertips on a hardcover book, then power on a
+    ball. Consecutive maxima on the same object form a group; with ``reps`` above 1 each group
+    is repeated ``reps`` times before the next, so there are no extra object swaps (the swap
+    happens while the next object's maximum is previewed). ``overrides`` as in
+    ``calibration_settings``.
     """
     if isinstance(reps, bool) or not isinstance(reps, int) or reps < 1:
         raise ValueError(f"reps must be a positive integer, got {reps!r}")
@@ -416,29 +395,16 @@ def grasp_calibration_block(
             groups[-1].append(m)
         else:
             groups.append([m])
-    t = lead_s + s["rest_s"]
-    prompts: list[TextPrompt] = []
-    for g, group in enumerate(groups):
-        if g:
-            t += s["swap_gap_s"]
-        for _ in range(reps):
-            for m in group:
-                if prompts and prompts[-1].grasp == m["grasp"]:
-                    t += s["rest_s"]
-                prompts.append(
-                    TextPrompt(
-                        m["text"],
-                        m["object"],
-                        grasp=m["grasp"],
-                        highlight=m["highlight"],
-                        duration_s=s["hold_s"],
-                        onset_s=round(t, 3),
-                    )
-                )
-                t += s["hold_s"] + s["gap_s"]
-    params = {"calibration": s, "reps": reps, "lead_s": lead_s,
-              "instructions": GRASP_CALIBRATION_INSTRUCTIONS}  # fmt: skip
-    return TextBlock(GRASP_CALIBRATION, GRASP_CALIBRATION, TIMED, prompts, params)
+    prompts = [
+        TextPrompt(m["text"], m["object"], grasp=m["grasp"], highlight=m["highlight"],
+                   duration_s=s["hold_s"])
+        for group in groups for _ in range(reps) for m in group
+    ]  # fmt: skip
+    # what to set out: each maximum's first line (its object, as the subject reads it)
+    set_out = list(dict.fromkeys(m["text"].strip().splitlines()[0].strip() for m in s["maxima"]))
+    params = {"calibration": s, "reps": reps,
+              "start": {"set_out": set_out, "task": GRASP_CALIBRATION_TASK}}  # fmt: skip
+    return TextBlock(GRASP_CALIBRATION, GRASP_CALIBRATION, SELF_PACED, prompts, params)
 
 
 def calibration_for_block(

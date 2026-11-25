@@ -490,6 +490,7 @@ def text_session(tmp_path_factory):
         _go_and_end_early,
         _grasp_block,
         _key,
+        _run_calibration,
         _wait,
         _window,
     )
@@ -504,8 +505,7 @@ def text_session(tmp_path_factory):
     clock, cal = Clock(), grasp_calibration_block()
     with _window(tmp, [cal, _grasp_block(n=2)], clock) as win:
         start(win)
-        _wait(win, clock, cal.duration_s)
-        _wait(win, clock, TAIL_S)
+        _run_calibration(win, clock)
         start(win)  # run 1: prompt 0 ok, ended early during prompt 1
         _do_prompt(win, clock)
         _go_and_end_early(win, clock)

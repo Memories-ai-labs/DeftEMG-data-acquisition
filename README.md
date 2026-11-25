@@ -328,11 +328,12 @@ it comes before:
 - A session's first calibration matches its first task block, and a later one the block it is
   put in front of.
 - **Before text blocks** (grasp and natural tasks): a grasp calibration, saved with `task_set:
-  grasp_calibration` (about 26 s: 25 s of prompts plus the 1.5 s tail). After the rest, one
-  brief maximum grasp (1.5 s, 3 s apart) of each kind: thumb-index, thumb-index-middle and
-  all fingertips on a hardcover book, then, after 6 s more to swap objects, a power grasp on a
-  ball. The screen previews each grasp, highlighted on the hand, and counts down to it. A
-  catalogue's `[calibration]` table changes the times, grasps and objects.
+  grasp_calibration`. It runs like the other text blocks: the screen previews each grasp,
+  highlighted on the hand, and Space starts its countdown. One brief maximum grasp (1.5 s,
+  ending by itself) of each kind: thumb-index, thumb-index-middle and all fingertips on a
+  hardcover book, then a power grasp on a ball (swap objects while it is previewed). After the
+  last one, Space finishes the block, and `r` redoes a grasp. A catalogue's `[calibration]`
+  table changes the hold time, grasps and objects.
 
 The two kinds keep separate schedules: the prompter puts a calibration before the session's
 first lane block and a grasp calibration before its first text block, and the 10 / 20 minute
@@ -780,12 +781,13 @@ Key arrays in the trial `.npz`:
     `cancelled`, `incomplete`).
   - The prompt's fields: `text_object`, `text_grasp`, `text_approach`, `text_variation`,
     `text_step`, `text_text` ("" = none). Scalar `block_start_host_ns`.
-  - No `prompt_*` arrays, `scroll_start_host_ns` or effort trace. The grasp calibration
-    (timed) saves the same arrays, with its scheduled times.
-  - Metadata: `task_set` (`grasp`, `natural`, `grasp_calibration`), `mode` (`self_paced`,
-    `timed`), `conditions`, `countdown_s`, `go_debounce_s`. `completed` means the block
-    finished in this trial. `text_resume_from` is the prompt the trial started at (0 for a
-    fresh run). Above 0, the earlier prompts are in the trial(s) chained by
+  - No `prompt_*` arrays, `scroll_start_host_ns` or effort trace. The grasp calibration saves
+    the same arrays. Calibrations recorded before it became operator-started are `timed`: their
+    times follow its schedule, and they replay but no longer run.
+  - Metadata: `task_set` (`grasp`, `natural`, `grasp_calibration`), `mode` (`self_paced`;
+    `timed` in those old calibrations), `conditions`, `countdown_s`, `go_debounce_s`.
+    `completed` means the block finished in this trial. `text_resume_from` is the prompt the
+    trial started at (0 for a fresh run). Above 0, the earlier prompts are in the trial(s) chained by
     `text_resumed_trial`: the file name (without `.npz`) of the run just before. Resume
     state isn't saved, so after a prompter restart a block starts again at prompt 1.
 

@@ -85,7 +85,7 @@ from deftemg_acquisition.tasks.app import (
 from deftemg_acquisition.tasks.effort import ZONES
 from deftemg_acquisition.tasks.prompter import DEFAULT_LOOKAHEAD_S
 from deftemg_acquisition.tasks.sequence import CALIBRATION_REPS, Sequence
-from deftemg_acquisition.tasks.textblock import TextBlock, calibration_for_block, load_block
+from deftemg_acquisition.tasks.textblock import TIMED, TextBlock, calibration_for_block, load_block
 from deftemg_acquisition.viz.screen import fit_font
 
 Blocks = list[tuple[Path, Sequence | TextBlock]]
@@ -336,6 +336,8 @@ def main(argv: list[str] | None = None, extension: PrompterExtension | None = No
             block_conditions(seq)  # raises for a malformed list
         except (OSError, ValueError, KeyError, TypeError) as e:
             raise SystemExit(f"{path}: not a usable sequence ({e})") from None
+        if isinstance(seq, TextBlock) and seq.mode == TIMED:  # before any device or folder opens
+            raise SystemExit(f"{path}: a timed block can only be replayed, not run")
         sequences.append((path, seq))
     if not sequences:
         sys.exit("no sequence files found")

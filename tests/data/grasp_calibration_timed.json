@@ -1,0 +1,124 @@
+{
+  "kind": "text_block",
+  "name": "grasp_calibration",
+  "task": "text_prompter",
+  "task_set": "grasp_calibration",
+  "mode": "timed",
+  "params": {
+    "calibration": {
+      "rest_s": 3.0,
+      "hold_s": 1.5,
+      "gap_s": 3.0,
+      "swap_gap_s": 6.0,
+      "maxima": [
+        {
+          "grasp": "TI",
+          "object": "hardcover_book",
+          "text": "Hardcover book\nThumb-index grasp\nBrief maximum, as hard as is comfortable",
+          "highlight": [
+            "thumb",
+            "index"
+          ]
+        },
+        {
+          "grasp": "TIM",
+          "object": "hardcover_book",
+          "text": "Hardcover book\nThumb-index-middle grasp\nBrief maximum, as hard as is comfortable",
+          "highlight": [
+            "thumb",
+            "index",
+            "middle"
+          ]
+        },
+        {
+          "grasp": "AD",
+          "object": "hardcover_book",
+          "text": "Hardcover book\nAll-fingertips grasp\nBrief maximum, as hard as is comfortable",
+          "highlight": [
+            "thumb",
+            "index",
+            "middle",
+            "ring",
+            "pinky"
+          ]
+        },
+        {
+          "grasp": "Power",
+          "object": "ball",
+          "text": "Ball\nPower grasp\nBrief maximum, as hard as is comfortable",
+          "highlight": "hand"
+        }
+      ]
+    },
+    "reps": 1,
+    "lead_s": 1.0,
+    "instructions": "Rest quietly until the first grasp is due. Then grasp the named object with the grasp shown, briefly and as hard as is comfortable, and relax fully in between. When the next grasp names a different object, swap objects during the longer pause. Rest a minute before the next block."
+  },
+  "prompts": [
+    {
+      "text": "Hardcover book\nThumb-index grasp\nBrief maximum, as hard as is comfortable",
+      "object": "hardcover_book",
+      "grasp": "TI",
+      "approach": null,
+      "variation": null,
+      "step": null,
+      "group": null,
+      "highlight": [
+        "thumb",
+        "index"
+      ],
+      "duration_s": 1.5,
+      "onset_s": 4.0,
+      "est_s": null
+    },
+    {
+      "text": "Hardcover book\nThumb-index-middle grasp\nBrief maximum, as hard as is comfortable",
+      "object": "hardcover_book",
+      "grasp": "TIM",
+      "approach": null,
+      "variation": null,
+      "step": null,
+      "group": null,
+      "highlight": [
+        "thumb",
+        "index",
+        "middle"
+      ],
+      "duration_s": 1.5,
+      "onset_s": 8.5,
+      "est_s": null
+    },
+    {
+      "text": "Hardcover book\nAll-fingertips grasp\nBrief maximum, as hard as is comfortable",
+      "object": "hardcover_book",
+      "grasp": "AD",
+      "approach": null,
+      "variation": null,
+      "step": null,
+      "group": null,
+      "highlight": [
+        "thumb",
+        "index",
+        "middle",
+        "ring",
+        "pinky"
+      ],
+      "duration_s": 1.5,
+      "onset_s": 13.0,
+      "est_s": null
+    },
+    {
+      "text": "Ball\nPower grasp\nBrief maximum, as hard as is comfortable",
+      "object": "ball",
+      "grasp": "Power",
+      "approach": null,
+      "variation": null,
+      "step": null,
+      "group": null,
+      "highlight": "hand",
+      "duration_s": 1.5,
+      "onset_s": 23.5,
+      "est_s": null
+    }
+  ]
+}

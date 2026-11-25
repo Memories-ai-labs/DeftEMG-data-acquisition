@@ -16,7 +16,6 @@ from deftemg_acquisition.tasks.sequence import (
     calibration_sequence,
 )
 from deftemg_acquisition.tasks.textblock import (
-    CALIBRATION_DEFAULTS,
     GRASP_CALIBRATION,
     TextBlock,
     TextPrompt,
@@ -127,24 +126,22 @@ def test_is_calibration():
     assert not _grasp_block().is_calibration and not _natural_block().is_calibration
 
 
-def test_estimate_and_duration():
+def test_estimate():
     block = _grasp_block()
-    assert block.duration_s is None
     assert block.estimate_s() == pytest.approx((3 + 4 + 5) + (3 + 6 + 5))
     assert block.estimate_s(1) == pytest.approx(3 + 6 + 5)  # a resumed block: remaining only
     natural = _natural_block()  # reset_s from params; a fixed duration counts as the task
     assert natural.estimate_s() == pytest.approx((3 + 25 + 2) * 2 + (3 + 20 + 2))
-    cal = grasp_calibration_block()
-    assert cal.estimate_s() == cal.duration_s
+    assert grasp_calibration_block().estimate_s() == pytest.approx(4 * (3 + 5 + 1.5))
 
 
-def test_estimate_rejects_start_index_outside_the_block():
+def test_estimate_rejects_start_index_outside_the_block(timed_calibration):
     block = _grasp_block()  # two prompts
     for bad in (2, -1, True, 1.0):
         with pytest.raises(ValueError, match="start_index"):
             block.estimate_s(bad)
-    with pytest.raises(ValueError, match="timed block always starts at prompt 0"):
-        grasp_calibration_block().estimate_s(1)
+    with pytest.raises(ValueError, match="timed block has no estimate"):
+        timed_calibration.estimate_s()
 
 
 @pytest.mark.parametrize(
@@ -166,7 +163,6 @@ def test_estimate_rejects_start_index_outside_the_block():
         (lambda d: d.pop("mode"), "missing mode"),
         (lambda d: d.update(prompts="none"), "list of tables"),
         (lambda d: d.update(name=""), "name"),
-        (lambda d: d.update(task_set="grasp_calibration"), "must be 'timed'"),
         (lambda d: d["prompts"][0].update(grasp=3), "grasp must be a string or None"),
         (lambda d: d["prompts"][0].update(step=["loosen"]), "step must be a string or None"),
         (lambda d: d["prompts"][0].update(object=None), "object"),
@@ -183,7 +179,7 @@ def test_estimate_rejects_start_index_outside_the_block():
         (lambda d: d["params"].update(timing={"reset_s": "5"}), "params.timing.reset_s"),
         (lambda d: d["params"].update(timing={"countdown_s": float("inf")}), "countdown_s"),
         (lambda d: d["params"].update(calibration={"hold": 2}), "params.calibration: unknown"),
-        (lambda d: d["params"].update(calibration={"gap_s": -1}), "params.calibration.gap_s"),
+        (lambda d: d["params"].update(calibration={"hold_s": -1}), "params.calibration.hold_s"),
     ],
 )
 def test_bad_text_blocks_raise(change, match):
@@ -193,16 +189,28 @@ def test_bad_text_blocks_raise(change, match):
         TextBlock.from_dict(d)
 
 
-def test_timed_block_needs_times_in_order():
-    d = grasp_calibration_block().to_dict()
+def test_a_saved_timed_calibration_loads(timed_calibration):
+    """The first trial run's timed calibrations, with the old spacing keys, still load (for
+    replay); only their ``hold_s`` and maxima mean anything now."""
+    cal = timed_calibration
+    assert cal.mode == "timed" and cal.is_calibration
+    assert [p.onset_s for p in cal.prompts] == [4.0, 8.5, 13.0, 23.5]
+    assert {"rest_s", "gap_s", "swap_gap_s"} <= set(cal.params["calibration"])
+    assert TextBlock.from_dict(cal.to_dict()) == cal
+    new = grasp_calibration_block().params["calibration"]
+    assert calibration_settings(cal.params["calibration"]) == new  # the old keys dropped
+
+
+def test_timed_block_needs_times_in_order(timed_calibration):
+    d = timed_calibration.to_dict()
     d["prompts"][1]["onset_s"] = None
     with pytest.raises(ValueError, match="onset_s and duration_s"):
         TextBlock.from_dict(d)
-    d = grasp_calibration_block().to_dict()
+    d = timed_calibration.to_dict()
     d["prompts"].reverse()
     with pytest.raises(ValueError, match="before prompt 0 ends"):
         TextBlock.from_dict(d)
-    d = grasp_calibration_block().to_dict()
+    d = timed_calibration.to_dict()
     d["prompts"][1]["onset_s"] = d["prompts"][0]["onset_s"] + 1.0  # inside the 1.5 s hold
     with pytest.raises(ValueError, match="not overlapping"):
         TextBlock.from_dict(d)
@@ -224,19 +232,17 @@ def test_bad_calibration_in_a_block_file_fails_at_load(tmp_path):
 # ---- the grasp calibration ----
 
 
-def test_grasp_calibration_schedule():
+def test_grasp_calibration_is_self_paced():
     cal = grasp_calibration_block()
     assert cal.name == cal.task_set == GRASP_CALIBRATION
-    assert cal.mode == "timed"
+    assert cal.mode == "self_paced"
     assert [(p.grasp, p.object) for p in cal.prompts] == [
         ("TI", "hardcover_book"),
         ("TIM", "hardcover_book"),
         ("AD", "hardcover_book"),
         ("Power", "ball"),
     ]
-    assert [p.onset_s for p in cal.prompts] == [4.0, 8.5, 13.0, 23.5]
-    assert {p.duration_s for p in cal.prompts} == {1.5}
-    assert cal.duration_s == 25.0  # about 26 s
+    assert all(p.onset_s is None and p.duration_s == 1.5 for p in cal.prompts)  # hold_s
     assert [p.highlight for p in cal.prompts] == [
         ("thumb", "index"),
         ("thumb", "index", "middle"),
@@ -245,29 +251,20 @@ def test_grasp_calibration_schedule():
     ]
     assert cal.prompts[0].text.startswith("Hardcover book")
     assert cal.prompts[-1].text.startswith("Ball")  # the swap's preview names the ball
-    assert "swap" in cal.params["instructions"]
-
-
-def test_grasp_calibration_times_match_the_lane_calibration():
-    """Same lead, rest, hold and gap as the lane calibration; only the swap adds time."""
-    lane = calibration_sequence()
-    cal = grasp_calibration_block()
-    assert cal.prompts[0].onset_s == lane.prompts[0].onset_s
-    assert cal.prompts[0].duration_s == lane.prompts[0].duration_s
-    lane_step = lane.prompts[1].onset_s - lane.prompts[0].onset_s
-    steps = [b.onset_s - a.onset_s for a, b in zip(cal.prompts, cal.prompts[1:], strict=False)]
-    assert steps[:2] == [lane_step, lane_step]
-    assert steps[2] == pytest.approx(lane_step + CALIBRATION_DEFAULTS["swap_gap_s"])
+    assert set(cal.params["calibration"]) == {"hold_s", "maxima"}
+    assert cal.params["start"] == {
+        "set_out": ["Hardcover book", "Ball"],
+        "task": "brief maximum grasps, as hard as is comfortable",
+    }
+    assert "instructions" not in cal.params and "lead_s" not in cal.params
 
 
 def test_grasp_calibration_reps_repeat_each_object_before_the_swap():
     cal = grasp_calibration_block(reps=2)
     assert [p.grasp for p in cal.prompts] == ["TI", "TIM", "AD"] * 2 + ["Power"] * 2
-    # the second power maximum, right after the first, gets rest_s (3 s) more than the gap
-    assert [p.onset_s for p in cal.prompts] == [4.0, 8.5, 13.0, 17.5, 22.0, 26.5, 37.0, 44.5]
-    assert cal.duration_s == 46.0
     objects = [p.object for p in cal.prompts]
     assert sum(a != b for a, b in zip(objects, objects[1:], strict=False)) == 1  # one swap
+    assert cal.params["start"]["set_out"] == ["Hardcover book", "Ball"]
     with pytest.raises(ValueError, match="reps"):
         grasp_calibration_block(reps=0)
 
@@ -275,12 +272,20 @@ def test_grasp_calibration_reps_repeat_each_object_before_the_swap():
 def test_grasp_calibration_overrides():
     maxima = [
         {"grasp": "Power", "object": "ball", "text": "Ball\nPower grasp"},
-        {"grasp": "TI", "object": "ball", "text": "Ball\nThumb-index grasp"},
+        {"grasp": "TI", "object": "ball", "text": "Tennis ball\nThumb-index grasp"},
     ]
-    cal = grasp_calibration_block({"hold_s": 2.0, "gap_s": 4.0, "rest_s": 0, "maxima": maxima})
-    assert [p.onset_s for p in cal.prompts] == [1.0, 7.0]  # one object: no swap gap
-    assert cal.duration_s == 9.0
+    cal = grasp_calibration_block({"hold_s": 2.0, "maxima": maxima})
+    assert {p.duration_s for p in cal.prompts} == {2.0}
     assert cal.params["calibration"]["maxima"][1]["highlight"] == ["thumb", "index"]
+    assert cal.params["start"]["set_out"] == ["Ball", "Tennis ball"]  # each text's first line
+
+
+def test_old_calibration_keys_are_accepted_and_dropped():
+    """Saved blocks embed the timed calibration's spacing; it is ignored now, even if odd."""
+    old = {"rest_s": 3.0, "gap_s": 3.0, "swap_gap_s": 6.0, "hold_s": 2.0}
+    assert calibration_settings(old) == calibration_settings({"hold_s": 2.0})
+    assert calibration_settings({"gap_s": -1}) == calibration_settings()
+    assert grasp_calibration_block(old) == grasp_calibration_block({"hold_s": 2.0})
 
 
 @pytest.mark.parametrize(
@@ -288,11 +293,10 @@ def test_grasp_calibration_overrides():
     [
         ({"hold": 2.0}, "unknown key"),  # a misspelt hold_s is an error, not ignored
         ({"hold_s": 0}, "hold_s"),
-        ({"gap_s": -1}, "gap_s"),
-        ({"swap_gap_s": "6"}, "swap_gap_s"),
-        ({"gap_s": float("inf")}, "gap_s"),
-        ({"rest_s": float("nan")}, "rest_s"),
+        ({"hold_s": "1.5"}, "hold_s"),
+        ({"hold_s": float("inf")}, "hold_s"),
         ({"hold_s": True}, "hold_s"),
+        ({"lead_s": 1.0}, "unknown key"),
         ({"maxima": "TI"}, "maxima"),
         ({"maxima": ["TI"]}, "expected a table"),
         ({"maxima": []}, "maxima"),
@@ -322,9 +326,9 @@ def test_calibration_for_block_matches_calibration_for_on_lane_blocks():
 def test_calibration_for_block_gives_the_grasp_calibration_for_text_blocks():
     assert calibration_for_block(_grasp_block()) == grasp_calibration_block()
     assert calibration_for_block(_natural_block(), 2) == grasp_calibration_block(reps=2)
-    block = _grasp_block(calibration={"swap_gap_s": 10})  # embedded catalogue overrides
+    block = _grasp_block(calibration={"hold_s": 2.5})  # embedded catalogue overrides
     cal = calibration_for_block(block)
-    assert cal.is_calibration and cal.prompts[-1].onset_s == 27.5
+    assert cal.is_calibration and {p.duration_s for p in cal.prompts} == {2.5}
     assert calibration_for_block(cal) == cal  # a calibration block keeps its settings
 
 
@@ -340,7 +344,6 @@ def test_catalogue_calibration_table_overrides_the_defaults(data):
     assert parse_catalogue(data).calibration == {}
     data["calibration"] = {
         "hold_s": 2,
-        "swap_gap_s": 8,
         "maxima": [
             {"grasp": "AD", "object": "hardcover_book", "text": "Book\nAll fingertips"},
             {"grasp": "Power", "object": "ball", "text": "Ball\nPower grasp"},
@@ -351,7 +354,7 @@ def test_catalogue_calibration_table_overrides_the_defaults(data):
     assert cat.calibration["maxima"][1]["highlight"] == "hand"
     block = _grasp_block(calibration=cat.calibration)  # as the generator embeds it
     cal = calibration_for_block(block)
-    assert [p.onset_s for p in cal.prompts] == [4.0, 4.0 + 2 + 3 + 8]
+    assert [p.grasp for p in cal.prompts] == ["AD", "Power"]
     assert {p.duration_s for p in cal.prompts} == {2.0}
     # embedded in a block file, the overrides survive the round trip
     assert calibration_for_block(TextBlock.from_dict(block.to_dict())) == cal
@@ -371,7 +374,9 @@ def test_catalogue_calibration_table_overrides_the_defaults(data):
         ({"maxima": [{"grasp": 3, "object": "ball", "text": "x"}]}, "grasp: ids are"),
         ({"maxima": ["TI"]}, "expected a table"),
         ({"maxima": []}, "maxima"),
-        ({"gap_s": float("inf")}, "gap_s"),
+        ({"gap_s": 3}, "unknown key.*gap_s"),  # the timed spacing: gone from new input
+        ({"rest_s": 3}, "unknown key.*rest_s"),
+        ({"swap_gap_s": 6}, "unknown key.*swap_gap_s"),
     ],
 )
 def test_catalogue_calibration_table_errors(data, table, match):
