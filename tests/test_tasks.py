@@ -362,3 +362,38 @@ def test_calibration_blocks_come_back_on_schedule(tmp_path):
         assert run(1950) == "calibration" and run(2000) == "e"
         assert len(win.sequences) == 8 and win.completed == set(range(8))
         win.close()
+
+
+def test_a_skipped_or_early_ended_lane_calibration_forces_none(tmp_path):
+    import pyqtgraph as pg
+    from pyqtgraph.Qt import QtCore, QtGui
+
+    from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig
+    from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband
+    from deftemg_acquisition.tasks.app import TaskWindow
+    from deftemg_acquisition.tasks.sequence import CALIBRATION
+
+    cal = Sequence(CALIBRATION, CALIBRATION, [Prompt(0.1, 0.1, ("index",), ("max",))])
+    press = [Prompt(0.1, 0.1, ("thumb",), ("low",))]
+    blocks = [(tmp_path / f"{n}.json", Sequence(n, "single", press)) for n in "abc"]
+    pg.mkQApp()
+    config = SessionConfig(data_dir=tmp_path, session_name="s", live_stream=False)
+    with AcquisitionSession(config, device=Armband("sim", ser=SimulatedArmband())) as session:
+        win = TaskWindow(session, [(tmp_path / "cal.json", cal), *blocks], tail_s=0.1,
+                         recalibrate_s=[600, 1200])  # fmt: skip
+        clock = [0.0]
+        win._now = lambda: clock[0]
+        win.start_block()  # the calibration, ended early: it stays current
+        win.end_block(completed=False)
+        assert win.current == 0 and not win.completed
+        right = QtGui.QKeyEvent(QtCore.QEvent.KeyPress, QtCore.Qt.Key_Right, QtCore.Qt.NoModifier)
+        win.keyPressEvent(right)  # skipped
+        for at in (700, 2000, 5000):  # long past any due time: still no calibration
+            clock[0] = at
+            name = win.sequence.name
+            win.start_block()
+            assert win.running and name in "abc"
+            win.end_block(completed=True)
+            assert "Calibration due" not in win.prompter.message
+        assert len(win.sequences) == 4 and win.completed == {1, 2, 3}
+        win.close()

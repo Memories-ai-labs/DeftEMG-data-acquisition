@@ -21,17 +21,24 @@ for a lane block. A timed text block (the grasp calibration) runs from its sched
 itself ``tail_s`` after its last prompt. Markers: ``text|preview|i``, ``text|countdown|i``,
 ``text|go|i|<label>``, ``text|end|i``; the sync patch flashes at each Go.
 
-Recalibration (``recalibrate_s``, e.g. [600, 1200]): once a calibration block has been done, the
-next one is due ``recalibrate_s[0]`` s after it started, later ones every ``recalibrate_s[-1]``
-s. A due calibration block is put in front of the current block when a block finishes, or
-when Shift is pressed after a pause (the screen then shows it; Shift again starts it).
+Recalibration (``recalibrate_s``, e.g. [600, 1200]) keeps two clocks: ``lane`` for the press,
+pinch and squeeze calibrations (before lane blocks) and ``grasp`` for the grasp calibration
+(before text blocks); one kind never counts for the other. Once a calibration block of a kind
+has been done, the next one of that kind is due ``recalibrate_s[0]`` s after it started, later
+ones every ``recalibrate_s[-1]`` s. A text block also needs a grasp calibration before it if
+none has been done yet this session (a lane block does not: the session's first lane
+calibration is put in by whoever builds the list, so a skipped or early-ended one forces
+nothing). A due calibration block (``textblock.calibration_for_block``: like the block it comes
+before) is put in front of the current block when the window opens, when a block finishes,
+or when Shift is pressed after a pause (the screen then shows it; Shift again starts it).
+Without ``recalibrate_s`` nothing is put in.
 
 Effort meter (``effort_meter=True``, ``tasks.effort``): a bar under the target row shows the
 overall EMG effort relative to the calibration maximum of what is prompted, from the first
-completed calibration block of the session on (each later one replaces the reference). Task
-blocks save its trace (``effort``, ``effort_host_ns``, ``effort_max_uv``, ``effort_level``:
--1 between presses, else the index into ``level_names``) and the settings (``effort_meter`` in
-the trial's metadata).
+completed lane calibration block of the session on (each later one replaces the reference; a
+grasp calibration never does). Lane task blocks (not text blocks) save its trace (``effort``,
+``effort_host_ns``, ``effort_max_uv``, ``effort_level``: -1 between presses, else the index
+into ``level_names``) and the settings (``effort_meter`` in the trial's metadata).
 
 A session source that reports a problem with a block (``ok: false`` in the trial's ``sources``,
 e.g. a glove that sent nothing) is named on the screen between blocks, until the next block.
@@ -39,10 +46,17 @@ The sources are also checked every ``SOURCE_CHECK_MS``, between blocks and durin
 (``AcquisitionSession.source_status``); a problem shows on a band under the header until it
 clears.
 
+Session conditions (``conditions``: {name: value}, e.g. how a bottle is filled): a text block
+names the ones it needs in ``params["conditions"]``; those (and only those) go into its trial's
+metadata as ``conditions`` and show on the screen before and during it. A block needing one
+that is not given is an error when the window is made, before anything is recorded.
+
 Plugins (``plugins``: :class:`TaskPlugin`) add to the window from other code, e.g. a live display
 of a model's output: text between blocks, metadata and arrays saved with each block, a hook
 each frame tick. Once attached they can't stop a recording: a hook that raises is logged and
-skipped (``attach`` runs before anything is recorded, and its errors stop the window).
+skipped (``attach`` runs before anything is recorded, and its errors stop the window). Hooks get
+the block as it is in the list: a ``Sequence`` or a ``TextBlock`` (no ``prompts`` with digits),
+so a hook that assumes lane fields fails on a text block and is skipped like any other.
 """
 
 from __future__ import annotations
@@ -65,9 +79,8 @@ from .sequence import (
     CALIBRATION_REPS,
     Sequence,
     active_label,
-    calibration_for,
 )
-from .textblock import COUNTDOWN_S, TASK, TIMED, TextBlock
+from .textblock import COUNTDOWN_S, TASK, TIMED, TextBlock, calibration_for_block
 
 log = logging.getLogger(__name__)
 
@@ -76,6 +89,23 @@ log = logging.getLogger(__name__)
 # paint time (see PrompterWidget.t0_perf), so ticks only request repaints and send markers.
 FRAME_MS = 4
 SOURCE_CHECK_MS = 1000
+# The calibration clocks: lane calibrations (press, pinch, squeeze) and the grasp calibration
+LANE, GRASP = "lane", "grasp"
+
+
+def calibration_family(block: Sequence | TextBlock) -> str:
+    """Which calibration clock a block (task or calibration) belongs to."""
+    return GRASP if isinstance(block, TextBlock) else LANE
+
+
+def block_conditions(block: Sequence | TextBlock) -> list[str]:
+    """The session conditions a block needs: a text block's ``params["conditions"]``."""
+    if not isinstance(block, TextBlock):
+        return []
+    names = block.params.get("conditions") or []
+    if not isinstance(names, list) or not all(isinstance(n, str) for n in names):
+        raise ValueError(f"{block.name}: params.conditions must be a list of names, got {names!r}")
+    return names
 
 
 def source_note(sources: dict) -> str:
@@ -89,23 +119,25 @@ def source_note(sources: dict) -> str:
 
 
 class TaskPlugin:
-    """Adds to a :class:`TaskWindow` (its ``plugins``). Every hook is optional."""
+    """Adds to a :class:`TaskWindow` (its ``plugins``). Every hook is optional. ``sequence`` is
+    the block: a ``Sequence``, or a ``TextBlock`` for a text block (check before using lane
+    fields such as ``prompts[i].digits``)."""
 
     def attach(self, window: TaskWindow) -> None:
         """Once, at the end of the window's set-up (the session is open, nothing shown yet);
         unlike the other hooks, an error here is raised."""
 
-    def instructions(self, sequence: Sequence) -> str:
+    def instructions(self, sequence: Sequence | TextBlock) -> str:
         """More text for the screen between blocks, after the effort bar's note."""
         return ""
 
-    def block_started(self, sequence: Sequence, metadata: dict) -> None:
+    def block_started(self, sequence: Sequence | TextBlock, metadata: dict) -> None:
         """A block is about to start recording; ``metadata`` goes into its trial's metadata."""
 
-    def block_ending(self, sequence: Sequence, arrays: dict) -> None:
+    def block_ending(self, sequence: Sequence | TextBlock, arrays: dict) -> None:
         """The running block is about to be saved; ``arrays`` go into its file."""
 
-    def block_ended(self, sequence: Sequence, completed: bool) -> None:
+    def block_ended(self, sequence: Sequence | TextBlock, completed: bool) -> None:
         """The block has been saved (``completed``: it ran to its end, not ended early); the
         window then moves on and shows the screen between blocks."""
 
@@ -133,10 +165,18 @@ class TaskWindow(QtWidgets.QMainWindow):
         plugins: list[TaskPlugin] | tuple[TaskPlugin, ...] = (),
         countdown_s: float = COUNTDOWN_S,
         go_debounce_s: float = GO_DEBOUNCE_S,
+        conditions: dict[str, str] | None = None,
     ):
         super().__init__()
         if not sequences:
             raise ValueError("no sequences to run")
+        self.conditions = dict(conditions or {})
+        for _, block in sequences:  # fail now, not when the block comes up mid-session
+            missing = [c for c in block_conditions(block) if c not in self.conditions]
+            if missing:
+                given = ", ".join(self.conditions) or "none"
+                raise ValueError(f"{block.name}: needs the session condition(s) "
+                                 f"{', '.join(missing)} (given: {given})")  # fmt: skip
         self.session = session
         self.sequences = sequences
         self.hand = hand
@@ -151,9 +191,11 @@ class TaskWindow(QtWidgets.QMainWindow):
         self.calibration_reps = calibration_reps
         self._now = time.monotonic  # replaceable in tests
         self._block_start = 0.0
-        self._last_calibration: float | None = None  # start of the last completed one
-        self._n_calibrations = 0
+        # per clock (LANE, GRASP): start of the last completed calibration, and how many
+        self._last_calibration: dict[str, float] = {}
+        self._n_calibrations = {LANE: 0, GRASP: 0}
         self._due_note = ""
+        self._due_family = LANE  # the kind of calibration the note is about
         self._source_note = ""  # the sources that failed in the last block
         # Text blocks: the countdown before Go, Space's debounce, and the running block
         self.countdown_s = countdown_s
@@ -191,6 +233,7 @@ class TaskWindow(QtWidgets.QMainWindow):
             self, timeout=self.check_sources, interval=SOURCE_CHECK_MS
         )
         self._source_timer.start()
+        self._schedule_calibration()  # a first text block: its grasp calibration first
         self._show_idle()
 
     # --- state -------------------------------------------------------------------------------
@@ -236,6 +279,8 @@ class TaskWindow(QtWidgets.QMainWindow):
         self.prompter.update()
 
     def _show_idle(self) -> None:
+        if self._due_note and calibration_family(self.sequence) != self._due_family:
+            self._due_note = ""  # moved to a block of the other kind: not its calibration
         self.prompter.sequence = self.sequence
         self.prompter.text_view = None  # never left over from a text block
         self.prompter.effort = None
@@ -274,7 +319,16 @@ class TaskWindow(QtWidgets.QMainWindow):
             length = f"{n} grasps, {block.duration_s + self.tail_s:.0f} s"
         else:
             length = f"{n} prompts, about {max(1, round(block.estimate_s() / 60))} min"
-        return (f"Place: {place}\n" if place else "") + length + "\n"
+        conds = self._conditions_line(block)
+        return ((f"Place: {place}\n" if place else "") + length + "\n"
+                + (f"Conditions: {conds}\n" if conds else ""))  # fmt: skip
+
+    def _block_conditions(self, block: Sequence | TextBlock) -> dict[str, str]:
+        """The session conditions ``block`` uses, with their values."""
+        return {name: self.conditions[name] for name in block_conditions(block)}
+
+    def _conditions_line(self, block: Sequence | TextBlock) -> str:
+        return ", ".join(f"{k} = {v}" for k, v in self._block_conditions(block).items())
 
     def _effort_note(self) -> str:
         if isinstance(self.sequence, TextBlock):  # no effort bar on text blocks
@@ -295,31 +349,52 @@ class TaskWindow(QtWidgets.QMainWindow):
             "filter": m.emg_filter.describe() if m.emg_filter else "the armband's",
         }
 
-    def _calibration_due(self) -> float | None:
-        """Minutes since the last calibration started, if another one is due."""
-        if not self.recalibrate_s or self._last_calibration is None:
+    def _calibration_due(self, family: str) -> str | None:
+        """Why a calibration of ``family`` (LANE or GRASP) is due, or None if none is."""
+        if not self.recalibrate_s:
             return None
-        gap = self.recalibrate_s[min(self._n_calibrations - 1, len(self.recalibrate_s) - 1)]
-        since = self._now() - self._last_calibration
-        return since / 60 if since >= gap else None
+        last = self._last_calibration.get(family)
+        if last is None:  # lane: none until the first is done (as before); grasp: one first
+            return "no calibration of this kind yet" if family == GRASP else None
+        gap = self.recalibrate_s[min(self._n_calibrations[family] - 1, len(self.recalibrate_s) - 1)]
+        since = self._now() - last
+        return f"{since / 60:.0f} min since the last one" if since >= gap else None
 
     def _schedule_calibration(self) -> bool:
-        """Put a calibration block in front of the current block if one is due."""
-        if self.running or self.sequence.task_set == CALIBRATION:
+        """Put a calibration block in front of the current block if one of its kind is due."""
+        if self.running or self.sequence.is_calibration:
             return False
-        if isinstance(self.sequence, TextBlock):  # no lane calibration before a text block
+        family = calibration_family(self.sequence)
+        why = self._calibration_due(family)
+        if why is None:
             return False
-        since_min = self._calibration_due()
-        if since_min is None:
-            return False
+        if family == GRASP:  # skipped or ended-early grasp calibrations: replaced, not added to
+            self._drop_pending_grasp_calibrations()
         at = self.current
-        # like the block it comes before: pinches before pinch blocks, and so on
-        block = calibration_for(self.sequences[at][1].task_set, self.calibration_reps)
+        # like the block it comes before: pinches before pinch blocks, grasps before text blocks
+        block = calibration_for_block(self.sequences[at][1], self.calibration_reps)
         self.sequences.insert(at, (Path(f"built-in/{block.name}.json"), block))
         self.completed = {i + 1 if i >= at else i for i in self.completed}
-        self._due_note = f"Calibration due ({since_min:.0f} min since the last one)\n\n"
-        log.info("calibration block due: %.0f min since the last one", since_min)
+        self._due_note = f"Calibration due ({why})\n\n"
+        self._due_family = family
+        log.info("calibration block %s due: %s", block.name, why)
         return True
+
+    def _drop_pending_grasp_calibrations(self) -> None:
+        """Take out the grasp calibration blocks not yet completed (skipped, or ended early),
+        so a due one is put in once, not again on each Shift; ``current`` keeps its block."""
+        drop = {
+            i
+            for i, (_, b) in enumerate(self.sequences)
+            if i not in self.completed and isinstance(b, TextBlock) and b.is_calibration
+        }
+        if not drop:
+            return
+        keep = [i for i in range(len(self.sequences)) if i not in drop]
+        new = {old: k for k, old in enumerate(keep)}
+        self.sequences[:] = [self.sequences[i] for i in keep]
+        self.completed = {new[i] for i in self.completed}
+        self.current = new[self.current]
 
     def start_block(self) -> None:
         if self.running:
@@ -334,6 +409,8 @@ class TaskWindow(QtWidgets.QMainWindow):
         extra = {}
         if self.prompter.show_effort and not text and seq.task_set != CALIBRATION:
             extra["effort_meter"] = self._effort_settings()  # (off after a failure)
+        if block_conditions(seq):
+            extra["conditions"] = self._block_conditions(seq)
         self._plugins("block_started", seq, extra)
         self._effort_log = []
         if text:
@@ -376,6 +453,7 @@ class TaskWindow(QtWidgets.QMainWindow):
             **extra,
         )
         self._runner = SelfPacedRunner(block, self.countdown_s, self.go_debounce_s,
+                                       conditions=self._conditions_line(block),
                                        host_ns=self._host_ns)  # fmt: skip
         self._t0_ns = self._runner.start_ns  # block_start_host_ns
         self._finish_at_ns = None
@@ -458,10 +536,11 @@ class TaskWindow(QtWidgets.QMainWindow):
         self._source_note = source_note(result.sources)
         self._plugins("block_ended", seq, completed)
         if completed:
-            if self.sequence.task_set == CALIBRATION:
-                self._last_calibration = self._block_start
-                self._n_calibrations += 1
-                if self.effort_meter is not None:
+            if self.sequence.is_calibration:  # restarts its own kind's clock only
+                family = calibration_family(self.sequence)
+                self._last_calibration[family] = self._block_start
+                self._n_calibrations[family] += 1
+                if family == LANE and self.effort_meter is not None:
                     self._set_effort_reference()
             self.completed.add(self.current)
             self.current = min(self.current + 1, len(self.sequences) - 1)
@@ -473,7 +552,7 @@ class TaskWindow(QtWidgets.QMainWindow):
         self._show_idle()
 
     def _set_effort_reference(self) -> None:
-        """The just-saved calibration block becomes the effort meter's 100 %."""
+        """The just-saved lane calibration block becomes the effort meter's 100 %."""
         last = self.session.trials[-1]
         ref = reference_from_trial(Path(last.npz_path), self.effort_meter.emg_filter)
         if ref is not None:

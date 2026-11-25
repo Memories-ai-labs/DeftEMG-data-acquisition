@@ -23,7 +23,8 @@ Text blocks (``textblock.TextBlock``) are drawn in text mode instead: with ``tex
 ``selfpaced.TextView``), or a ``TextBlock`` as the ``sequence``, there are no lanes, capsules,
 target rings or effort bar. The area above the hand shows where the block is, a state line
 (rest and the next prompt, 3 2 1, GO) and the prompt's text, and the hand shows the grasp: a
-disc on each highlighted fingertip, or the whole hand filled for a power grasp.
+disc on each highlighted fingertip, or the whole hand filled for a power grasp. Only overlays
+that opt in (``PrompterOverlay.text_mode``) are drawn on text blocks.
 """
 
 from __future__ import annotations
@@ -236,8 +237,13 @@ class PrompterOverlay:
     runs after the lane lines, before the capsules; ``paint_over`` after the target rings, before
     the effort bar and the hand. Each gets the painter (saved and restored around the call), the
     layout and the widget (``widget.t``: the block's time, None between blocks). One that raises
-    is logged and removed. Text blocks have no lanes, and text mode does not call overlays
-    yet (``text_mode`` is reserved for overlays that will draw on text blocks)."""
+    is logged and removed.
+
+    Text blocks have no lanes, so in text mode only overlays with ``text_mode = True`` are
+    called (``paint_under`` before the text view, ``paint_over`` after it, both before the hand;
+    ``widget.text_view`` is the block's state, None between blocks). The others are skipped
+    there, not removed, and are drawn again on the next lane block. An overlay with
+    ``text_mode = True`` is called on lane blocks too."""
 
     text_mode = False
 
@@ -420,7 +426,9 @@ class PrompterWidget(QtWidgets.QWidget):
         p.setRenderHint(QtGui.QPainter.Antialiasing)
 
         if self.text_mode:
+            self._paint_overlays("paint_under", p, lay)
             self._paint_text_view(p, lay)
+            self._paint_overlays("paint_over", p, lay)
         else:
             # Lanes
             p.setPen(QtGui.QPen(_qcolor(FOREGROUND, 25), 1))
@@ -509,7 +517,10 @@ class PrompterWidget(QtWidgets.QWidget):
                 self.on_paint = None
 
     def _paint_overlays(self, step: str, p: QtGui.QPainter, lay: Layout) -> None:
+        text = self.text_mode
         for overlay in list(self.overlays):
+            if text and not getattr(overlay, "text_mode", False):
+                continue  # a lane overlay: nothing to draw on a text block
             p.save()
             try:
                 getattr(overlay, step)(p, lay, self)

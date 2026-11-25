@@ -15,13 +15,17 @@ from pyqtgraph.Qt import QtCore, QtGui  # noqa: E402
 
 from deftemg_acquisition.acquisition import AcquisitionSession, Armband, SessionConfig  # noqa: E402
 from deftemg_acquisition.acquisition.armband.sim import SimulatedArmband  # noqa: E402
-from deftemg_acquisition.tasks import prompter  # noqa: E402
-from deftemg_acquisition.tasks.app import TaskWindow  # noqa: E402
+from deftemg_acquisition.tasks import app, prompter  # noqa: E402
+from deftemg_acquisition.tasks.app import TaskPlugin, TaskWindow  # noqa: E402
+from deftemg_acquisition.tasks.effort import EffortReference  # noqa: E402
+from deftemg_acquisition.tasks.prompter import PrompterOverlay  # noqa: E402
 from deftemg_acquisition.tasks.selfpaced import DONE, GO, IDLE, PREVIEW, TextView  # noqa: E402
-from deftemg_acquisition.tasks.sequence import Prompt, Sequence  # noqa: E402
+from deftemg_acquisition.tasks.sequence import CALIBRATION, Prompt, Sequence  # noqa: E402
 from deftemg_acquisition.tasks.textblock import (  # noqa: E402
+    GRASP_CALIBRATION,
     TEXT_INT_ARRAYS,
     TEXT_STR_ARRAYS,
+    TIMED,
     TextBlock,
     TextPrompt,
     grasp_calibration_block,
@@ -391,3 +395,301 @@ def test_go_is_painted_and_the_sync_patch_flashes_only_at_go(tmp_path, monkeypat
     go, painted = int(data["text_go_host_ns"][0]), int(data["text_go_paint_ns"][0])
     assert painted == go_frame and painted - go == 10_000_000
     assert data["sync_flash_paint_ns"].tolist() == [go_frame]
+
+
+# ---- text and lane blocks in one session: calibrations, effort meter, conditions, plugins ----
+
+
+def _lane(name: str, task_set: str = "single") -> Sequence:
+    return Sequence(name, task_set, [Prompt(0.2, 0.3, ("middle",), ("high",))])
+
+
+def _session_clock(win: TaskWindow) -> list[float]:
+    """The window's calibration clock (s), set by the test."""
+    now = [0.0]
+    win._now = lambda: now[0]
+    return now
+
+
+def _run(win: TaskWindow, clock: Clock, now: list[float], at: float) -> str:
+    """Start the current block at session time ``at`` and run it to its end; its name."""
+    now[0] = at
+    block = win.sequence
+    win.start_block()
+    assert win.running, f"{block.name} did not start"
+    if isinstance(block, TextBlock) and block.mode == TIMED:
+        _wait(win, clock, block.duration_s)
+        _wait(win, clock, TAIL_S)
+    elif isinstance(block, TextBlock):
+        for _ in block.prompts:
+            _do_prompt(win, clock)
+        clock.advance(1.5)
+        _key(win, Qt.Key_Space)
+        _wait(win, clock, TAIL_S)
+    else:
+        win.end_block(completed=True)
+    assert not win.running
+    return block.name
+
+
+def test_each_kind_of_block_gets_its_own_kind_of_calibration(tmp_path):
+    """Lane and grasp calibrations keep separate clocks: neither counts for the other."""
+    clock = Clock()
+    lane_cal = Sequence(CALIBRATION, CALIBRATION, [Prompt(0.1, 0.1, ("index",), ("max",))])
+    t1, t2, t3 = _grasp_block("t1", n=1), _grasp_block("t2", n=1), _grasp_block("t3", n=1)
+    blocks = [lane_cal, _lane("a"), t1, _lane("b", "pinch"), t2, t3]
+    with _window(tmp_path, blocks, clock, recalibrate_s=[600, 1200]) as win:
+        now = _session_clock(win)
+        assert win.sequence is lane_cal  # a lane block first: nothing added
+        assert _run(win, clock, now, 0) == CALIBRATION and _run(win, clock, now, 100) == "a"
+        # The lane calibration does not count for a text block: a grasp calibration first
+        assert win.sequence.task_set == GRASP_CALIBRATION and isinstance(win.sequence, TextBlock)
+        assert "Calibration due (no calibration of this kind yet)" in win.prompter.message
+        assert _run(win, clock, now, 200) == GRASP_CALIBRATION and win.sequence is t1
+        assert _run(win, clock, now, 300) == "t1" and win.sequence.name == "b"  # lane: 300 s
+        # 650 s after the lane calibration: one is due before b, though the grasp one was 450 s
+        # ago, and it pinches like b
+        now[0] = 650
+        win.start_block()
+        assert not win.running and win.sequence.calibration_task == "pinch"
+        assert "Calibration due (11 min since the last one)" in win.prompter.message
+        assert _run(win, clock, now, 650) == "calibration_pinch"
+        assert _run(win, clock, now, 700) == "b" and win.sequence is t2  # grasp: 500 s
+        now[0] = 800  # 600 s after the grasp calibration: the next one is due
+        win.start_block()
+        assert not win.running and win.sequence.task_set == GRASP_CALIBRATION
+        assert "Calibration due (10 min since the last one)" in win.prompter.message
+        assert _run(win, clock, now, 800) == GRASP_CALIBRATION
+        assert _run(win, clock, now, 850) == "t2"
+        # after the second grasp calibration, the next is due recalibrate_s[-1] later
+        assert _run(win, clock, now, 1990) == "t3"
+        names = [b.name for _, b in win.sequences]
+        assert names == [CALIBRATION, "a", GRASP_CALIBRATION, "t1", "calibration_pinch", "b",
+                         GRASP_CALIBRATION, "t2", "t3"]  # fmt: skip
+        assert win.completed == set(range(9))
+    tasks = [r["metadata"]["task"] for r in _records(tmp_path)]
+    assert tasks == ["scroll_prompter", "scroll_prompter", "text_prompter", "text_prompter",
+                     "scroll_prompter", "scroll_prompter", "text_prompter", "text_prompter",
+                     "text_prompter"]  # fmt: skip
+
+
+def test_a_first_text_block_gets_its_grasp_calibration_first(tmp_path):
+    clock = Clock()
+    block = _grasp_block(n=1)
+    block.params["calibration"] = {"swap_gap_s": 2.0}
+    with _window(tmp_path, [block, _lane("a")], clock, recalibrate_s=[600, 1200]) as win:
+        now = _session_clock(win)
+        cal = win.sequence
+        assert cal.task_set == GRASP_CALIBRATION and len(win.sequences) == 3
+        assert cal.params["calibration"]["swap_gap_s"] == 2.0  # the block's overrides
+        assert "Calibration due (no calibration of this kind yet)" in win.prompter.message
+        _key(win, Qt.Key_Right)  # skipped: the text block still needs one
+        assert win.sequence is block
+        _key(win, Qt.Key_Shift)  # the skipped one comes back: replaced, not a second one
+        assert not win.running and win.sequence.task_set == GRASP_CALIBRATION
+        assert len(win.sequences) == 3 and win.current == 0
+        assert _run(win, clock, now, 10) == GRASP_CALIBRATION and win.sequence is block
+        assert _run(win, clock, now, 20) == "tuna_can"
+        # a lane block needs no first calibration of its kind here (the list's builder adds it)
+        assert win.sequence.name == "a" and _run(win, clock, now, 3000) == "a"
+        assert len(win.sequences) == 3 and win.completed == {0, 1, 2}
+        assert "All blocks done" in win.prompter.message
+    # Without recalibrate_s (no calibrations), nothing is added
+    with _window(tmp_path / "none", [_grasp_block(n=1)], clock) as win:
+        assert len(win.sequences) == 1 and win.sequence.name == "tuna_can"
+
+
+def _grasp_calibrations(win: TaskWindow) -> list[int]:
+    return [i for i, (_, b) in enumerate(win.sequences) if b.task_set == GRASP_CALIBRATION]
+
+
+def test_an_ended_early_grasp_calibration_is_never_doubled(tmp_path):
+    clock = Clock()
+    block = _grasp_block(n=1)
+    with _window(tmp_path, [block, _lane("a")], clock, recalibrate_s=[600, 1200]) as win:
+        now = _session_clock(win)
+        win.start_block()  # the grasp calibration put in first, ended early
+        _wait(win, clock, 2.0)
+        _key(win, Qt.Key_Return)
+        assert not win.running and win.current == 0 and not win.completed
+        for _ in range(2):  # skipped, then Shift on the text block: it comes back, once
+            _key(win, Qt.Key_Right)
+            assert win.sequence is block
+            _key(win, Qt.Key_Shift)
+            assert not win.running and win.sequence.task_set == GRASP_CALIBRATION
+            assert _grasp_calibrations(win) == [win.current]
+        assert _run(win, clock, now, 10) == GRASP_CALIBRATION
+        assert _run(win, clock, now, 20) == "tuna_can" and _run(win, clock, now, 30) == "a"
+        assert _grasp_calibrations(win) == [0] and len(win.sequences) == 3
+        assert win.completed == {0, 1, 2} and "All blocks done" in win.prompter.message
+    recs = _records(tmp_path)
+    assert [r["metadata"]["completed"] for r in recs] == [False, True, True, True]
+
+
+def test_a_due_note_goes_with_its_kind_of_block(tmp_path):
+    clock = Clock()
+    with _window(tmp_path, [_grasp_block(n=1), _lane("a")], clock,
+                 recalibrate_s=[600, 1200]) as win:  # fmt: skip
+        note = "Calibration due (no calibration of this kind yet)"
+        assert note in win.prompter.message
+        _key(win, Qt.Key_Right)  # the text block: its calibration is still due
+        assert note in win.prompter.message
+        _key(win, Qt.Key_Right)  # a lane block: not its calibration
+        assert win.sequence.name == "a" and "Calibration due" not in win.prompter.message
+
+
+def test_effort_meter_stays_on_lane_blocks(tmp_path, monkeypatch):
+    """A grasp calibration never sets the effort reference, text blocks neither show nor save
+    the meter, and a lane block after a text block still does both."""
+    calls = []
+    monkeypatch.setattr(app, "reference_from_trial", lambda *a: calls.append(a))
+    clock = Clock()
+    blocks = [grasp_calibration_block(), _grasp_block(n=1), _lane("a")]
+    with _window(tmp_path, blocks, clock, effort_meter=True) as win:
+        now = _session_clock(win)
+        assert _run(win, clock, now, 0) == GRASP_CALIBRATION
+        assert calls == [] and win.effort_meter.reference is None
+        win.effort_meter.reference = EffortReference("lane_cal", np.zeros(8), {"middle": 50.0},
+                                                     {"middle": 50.0})  # fmt: skip
+        assert "effort bar" not in win.prompter.message
+        win.start_block()
+        _wait(win, clock, 0.5)
+        assert win.prompter.effort is None
+        _do_prompt(win, clock)
+        clock.advance(1.5)
+        _key(win, Qt.Key_Space)
+        _wait(win, clock, TAIL_S)
+        assert win.sequence.name == "a" and "effort bar" in win.prompter.message
+        win.start_block()
+        win._tick()
+        assert win.prompter.show_effort and win.prompter.effort is not None
+        win.end_block(completed=True)
+    recs = _records(tmp_path)
+    for rec in recs[:2]:
+        assert "effort_meter" not in rec["metadata"]
+        assert not [k for k in np.load(rec["npz_path"]).files if k.startswith("effort")]
+    assert recs[2]["metadata"]["effort_meter"]["reference"] == "lane_cal"
+    assert len(np.load(recs[2]["npz_path"])["effort_host_ns"]) >= 1
+
+
+def test_conditions_go_only_to_the_blocks_that_use_them(tmp_path):
+    clock = Clock()
+    bottle, ball = _grasp_block("bottle", n=1), _grasp_block("ball", n=1)
+    bottle.params["conditions"] = ["bottle_fill"]
+    conditions = {"bottle_fill": "filled", "lid": "on"}
+    with _window(tmp_path, [bottle, ball, _lane("a")], clock, conditions=conditions) as win:
+        now = _session_clock(win)
+        assert "Conditions: bottle_fill = filled\n" in win.prompter.message
+        assert "lid" not in win.prompter.message
+        win.start_block()
+        assert win.prompter.text_view.conditions == "bottle_fill = filled"
+        win.end_block(completed=False)
+        assert _run(win, clock, now, 0) == "bottle"
+        assert "Conditions" not in win.prompter.message  # the ball uses none
+        assert _run(win, clock, now, 0) == "ball" and _run(win, clock, now, 0) == "a"
+    recs = _records(tmp_path)
+    assert [r["label"] for r in recs] == ["bottle", "bottle", "ball", "a"]
+    meta = [r["metadata"] for r in recs]
+    assert meta[0]["conditions"] == meta[1]["conditions"] == {"bottle_fill": "filled"}
+    assert "conditions" not in meta[2] and "conditions" not in meta[3]
+
+
+def test_a_block_needing_a_condition_not_given_fails_when_the_window_is_made(tmp_path):
+    bottle = _grasp_block("bottle", n=1)
+    bottle.params["conditions"] = ["bottle_fill", "lid"]
+    match = r"bottle: needs the session condition\(s\) lid \(given: bottle_fill\)"
+    with pytest.raises(ValueError, match=match):
+        with _window(tmp_path, [_grasp_block(n=1), bottle], conditions={"bottle_fill": "x"}):
+            pass
+    bottle.params["conditions"] = "bottle_fill"
+    with pytest.raises(ValueError, match="params.conditions must be a list of names"):
+        with _window(tmp_path, [bottle], conditions={"bottle_fill": "x"}):
+            pass
+    assert not (tmp_path / "s" / "trials.jsonl").exists()  # nothing recorded
+
+
+class _Recorder(TaskPlugin):
+    def __init__(self):
+        self.calls = []
+
+    def instructions(self, sequence):
+        self.calls.append(("instructions", sequence))
+        return "[plugin note]\n"
+
+    def block_started(self, sequence, metadata):
+        self.calls.append(("started", sequence))
+        metadata["plugin"] = sequence.task_set
+
+    def block_ending(self, sequence, arrays):
+        self.calls.append(("ending", sequence))
+        arrays["plugin_x"] = np.arange(3)
+
+    def block_ended(self, sequence, completed):
+        self.calls.append(("ended", sequence, completed))
+
+
+class _LaneOnly(TaskPlugin):
+    """Assumes lane blocks: every hook raises on a text block."""
+
+    def instructions(self, sequence):
+        return f"{sequence.prompts[0].digits}\n"
+
+    def block_started(self, sequence, metadata):
+        metadata["digits"] = list(sequence.prompts[0].digits)
+
+    def block_ending(self, sequence, arrays):
+        arrays["digits"] = np.array(sequence.prompts[0].digits)
+
+
+def test_plugin_hooks_get_the_text_block(tmp_path):
+    clock = Clock()
+    block = _grasp_block(n=1)
+    rec, lane_only = _Recorder(), _LaneOnly()
+    with _window(tmp_path, [block, _lane("a")], clock, plugins=[lane_only, rec]) as win:
+        assert "[plugin note]" in win.prompter.message  # the lane-only one was skipped
+        assert _run(win, clock, _session_clock(win), 0) == "tuna_can"
+        assert "('middle',)" in win.prompter.message  # it works on the lane block
+    kinds = [c[0] for c in rec.calls if c[1] is block]
+    assert kinds[:4] == ["instructions", "started", "ending", "ended"]
+    assert ("ended", block, True) in rec.calls
+    meta = _records(tmp_path)[0]["metadata"]
+    assert meta["plugin"] == "grasp" and "digits" not in meta and meta["completed"] is True
+    data = np.load(_records(tmp_path)[0]["npz_path"])
+    assert data["plugin_x"].tolist() == [0, 1, 2] and "digits" not in data.files
+
+
+class _Overlay(PrompterOverlay):
+    def __init__(self, text_mode: bool):
+        self.text_mode = text_mode
+        self.calls = []
+
+    def paint_under(self, p, lay, widget):
+        self.calls.append(("under", widget.text_mode, widget.text_view))
+
+    def paint_over(self, p, lay, widget):
+        self.calls.append(("over", widget.text_mode, widget.text_view))
+
+
+def test_only_text_mode_overlays_draw_on_text_blocks(tmp_path):
+    clock = Clock()
+    lane_ov, text_ov = _Overlay(False), _Overlay(True)
+    with _window(tmp_path, [_grasp_block(n=1), _lane("a")], clock) as win:
+        w = win.prompter
+        w.overlays += [lane_ov, text_ov]
+        w.grab()  # between blocks, a text block shown
+        assert lane_ov.calls == []
+        assert text_ov.calls == [("under", True, None), ("over", True, None)]
+        win.start_block()
+        text_ov.calls.clear()
+        w.grab()
+        assert [c[:2] for c in text_ov.calls] == [("under", True), ("over", True)]
+        assert all(c[2].phase == PREVIEW for c in text_ov.calls)
+        assert lane_ov.calls == [] and w.overlays == [lane_ov, text_ov]  # skipped, not removed
+        _do_prompt(win, clock)
+        clock.advance(1.5)
+        _key(win, Qt.Key_Space)
+        _wait(win, clock, TAIL_S)
+        assert win.sequence.name == "a"
+        text_ov.calls.clear()
+        w.grab()  # a lane block: both drawn
+        assert lane_ov.calls == text_ov.calls == [("under", False, None), ("over", False, None)]
