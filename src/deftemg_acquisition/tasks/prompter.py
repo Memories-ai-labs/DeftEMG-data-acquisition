@@ -419,7 +419,7 @@ class PrompterWidget(QtWidgets.QWidget):
     def _draw_rich_message(self, p: QtGui.QPainter, area: QtCore.QRectF, font) -> None:
         """``message`` with bold parts (``message_bold``): the largest size that fits ``area``,
         centred on a backdrop that fits the text, as the plain path draws it."""
-        for size in range(20, 9, -1):  # smaller text until it fits a small window
+        for size in range(20, 5, -1):  # smaller text until it fits a small window
             font.setPointSizeF(font_points(size))
             doc = self._message_document(font, area.width())
             w, h = doc.idealWidth(), doc.size().height()
@@ -549,7 +549,7 @@ class PrompterWidget(QtWidgets.QWidget):
         elif self.message:
             area = QtCore.QRectF(56, lay.header_h, self.width() - 112, lay.target_y - lay.header_h)
             flags = QtCore.Qt.AlignCenter | QtCore.Qt.TextWordWrap
-            for size in range(20, 9, -1):  # smaller text until it fits a small window
+            for size in range(20, 5, -1):  # smaller text until it fits a small window
                 font.setPointSizeF(font_points(size))
                 p.setFont(font)
                 text = p.boundingRect(area, flags, self.message)  # the backdrop fits the text
