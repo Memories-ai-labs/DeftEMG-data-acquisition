@@ -54,7 +54,7 @@ class TrialRecorder:
         d = P.decode(raw, filter_enabled).as_dict()
         # A packet is fully received in the first chunk whose end offset covers its last byte.
         length = P.packet_len(filter_enabled)
-        for kind in ("emg", "imu"):
+        for kind in ("emg", "imu", "marker"):
             last_byte = d[f"{kind}_offset"] + length
             idx = np.searchsorted(chunk_end, last_byte, side="left")
             d[f"{kind}_host_time_ns"] = (
