@@ -1,4 +1,6 @@
 import dataclasses
+import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -471,3 +473,112 @@ def test_press_detector_recovers_synthetic_timing(tmp_path):
         off_err += list(off[ok] - (300 + 16))
     assert abs(np.median(on_err)) < 30 and abs(np.median(off_err)) < 60
     assert len(on_err) >= 30
+
+
+# ---- text-prompt blocks: recorded by the task window, loaded beside lane trials ----
+
+
+@pytest.fixture(scope="module")
+def text_session(tmp_path_factory):
+    """A grasp calibration, then a text block ended early after its first prompt and resumed
+    to its end, recorded by the task window on a fake host clock; the session folder."""
+    from test_text_window import (
+        TAIL_S,
+        Clock,
+        Qt,
+        _do_prompt,
+        _go_and_end_early,
+        _grasp_block,
+        _key,
+        _run_calibration,
+        _wait,
+        _window,
+    )
+
+    from deftemg_acquisition.tasks.textblock import grasp_calibration_block
+
+    def start(win):  # the fake clock runs the block at once: give the EMG real time
+        win.start_block()
+        time.sleep(0.2)
+
+    tmp = tmp_path_factory.mktemp("text")
+    clock, cal = Clock(), grasp_calibration_block()
+    with _window(tmp, [cal, _grasp_block(n=2)], clock) as win:
+        start(win)
+        _run_calibration(win, clock)
+        start(win)  # run 1: prompt 0 ok, ended early during prompt 1
+        _do_prompt(win, clock)
+        _go_and_end_early(win, clock)
+        start(win)  # run 2: resumes at prompt 1, to the end
+        _do_prompt(win, clock)
+        clock.advance(1.5)
+        _key(win, Qt.Key_Space)
+        _wait(win, clock, TAIL_S)
+        assert not win.running and win.completed == {0, 1}
+    return tmp / "s"
+
+
+def test_text_blocks_load_and_resumed_runs_keep_their_start(text_session):
+    from deftemg_acquisition.data.trials import TEXT_BLOCK, scan_trial
+
+    infos = scan_trials([text_session])
+    assert [i.metadata["task_set"] for i in infos] == ["grasp_calibration", "grasp", "grasp"]
+    for info in infos:
+        assert info.is_text_block and not info.is_prompter and not info.is_calibration
+        assert info.n_prompts == 0 and info.prompt_hash is None
+        assert scan_trial(info.npz_path) == info
+    assert [r for _, r in select_trials(infos)[1]] == ["simulated armband"] * 3
+    assert dict(select_trials(infos, exclude_simulated=False)[1]) == {
+        i.id: TEXT_BLOCK for i in infos
+    }
+    cal, first, second = (load_trial(i.npz_path) for i in infos)
+    assert cal.prompts is None and cal.scroll_start_ns is None and cal.arrays == {}
+    tp = cal.text_prompts
+    assert len(tp) == 4 and set(tp.status) == {"ok"} and set(tp.end_reason) == {"timer"}
+    assert tp.resume_from == 0 and tp.resumed_trial is None
+    assert first.text_prompts.prompt_index.tolist() == [0, 1]
+    assert first.text_prompts.status.tolist() == ["ok", "incomplete"]
+    assert not first.info.completed and second.info.completed
+    tp = second.text_prompts
+    assert tp.resume_from == 1 and tp.resumed_trial == first.info.npz_path.stem
+    assert tp.prompt_index.tolist() == [1] and tp.grasp.tolist() == ["TIM"]
+    assert tp.object.tolist() == ["tuna_can"] and tp.step.tolist() == [""]
+    assert tp.block_start_ns <= tp.preview_ns[0] < tp.countdown_ns[0] < tp.go_ns[0] < tp.end_ns[0]
+    assert tp.go_ns.dtype == np.int64 and tp.text[0].startswith("Tuna can")
+
+
+def test_lane_calibration_and_timing_with_text_blocks_in_the_session(
+    text_session, tmp_path, monkeypatch
+):
+    """Text trials beside lane trials: lane selection is unchanged, the grasp calibration is
+    no lane calibration, and the timing report runs over all of them."""
+    import json
+    import shutil
+    import sys
+
+    from deftemg_acquisition.cli import check_timing
+    from deftemg_acquisition.data.calibration import calibration_trials, session_calibration
+    from deftemg_acquisition.data.synthetic import SyntheticConfig, write_session
+    from deftemg_acquisition.data.trials import TEXT_BLOCK, read_records
+
+    session = write_session(tmp_path / "C", SyntheticConfig(n_blocks=1, per_block=6,
+                            calibration=True, seed=9, compress=False))  # fmt: skip
+    lane = scan_trials([session])
+    lane_usable, lane_skipped = select_trials(lane)
+    lane_cal = session_calibration(session)
+    with (session / "trials.jsonl").open("a") as log:
+        for rec in read_records(text_session):
+            npz = session / Path(rec["npz_path"]).name
+            shutil.copy(rec["npz_path"], npz)
+            log.write(json.dumps({**rec, "npz_path": str(npz)}) + "\n")
+    infos = scan_trials([session])
+    usable, skipped = select_trials(infos)
+    text_ids = [i.id for i in infos if i.is_text_block]
+    assert len(text_ids) == 3 and usable == lane_usable
+    assert skipped == lane_skipped + [(i, TEXT_BLOCK) for i in text_ids]
+    assert [i.id for i in calibration_trials(session)] == [lane[0].id]
+    assert session_calibration(session).trial_id == lane_cal.trial_id == lane[0].id
+    monkeypatch.setattr(sys, "argv", ["check-timing", str(session)])
+    check_timing.main()
+    summary = json.loads((session / "timing.json").read_text())
+    assert len(summary) == len(infos) and [s["n_prompts"] for s in summary[-3:]] == [0, 0, 0]

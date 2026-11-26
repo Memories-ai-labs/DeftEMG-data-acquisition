@@ -4,11 +4,14 @@ import os
 import sys
 import time
 import traceback
+from pathlib import Path
 
 import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# A grasp calibration as the first trial run saved it: timed, with the old spacing keys
+TIMED_CALIBRATION = Path(__file__).parent / "data" / "grasp_calibration_timed.json"
 
 
 @pytest.fixture(autouse=True)
@@ -22,6 +25,14 @@ def qt_callback_errors(monkeypatch):
     if caught:
         text = "".join(traceback.format_exception(*caught[0]))
         pytest.fail(f"exception in a Qt callback:\n{text}", pytrace=False)
+
+
+@pytest.fixture
+def timed_calibration():
+    """The saved timed grasp calibration (``TIMED_CALIBRATION``), loaded: replay-only now."""
+    from deftemg_acquisition.tasks.textblock import TextBlock
+
+    return TextBlock.load(TIMED_CALIBRATION)
 
 
 @pytest.fixture(scope="session")

@@ -1,9 +1,9 @@
 # DeftEMG data acquisition
 
 Tools for recording EMG with the WAVELETECH 18-channel EMG armband (2000 Hz EMG, IMU at about
-217 Hz, USB serial). They prompt cued finger presses at two force levels, and check the recordings
-afterwards. This is the data-collection side of DeftEMG, a project estimating finger force
-from EMG.
+217 Hz, USB serial). They prompt cued finger presses at two force levels, or written grasp and
+everyday-object tasks, and check the recordings afterwards. This is the data-collection side
+of DeftEMG, a project estimating finger force from EMG.
 
 This project is independent and is not affiliated with or endorsed by WAVELETECH.
 
@@ -15,7 +15,8 @@ This project is independent and is not affiliated with or endorsed by WAVELETECH
 | `pixi run viewer` | Live EMG / IMU / spectrum viewer (or add `--viewer` to `acquire` / `prompter`) |
 | `pixi run serve` | Stream the armband to another computer, which records it with `--remote` |
 | `pixi run make-sequences` | Generate cued finger-press sequences (JSON files) |
-| `pixi run prompter` | Run the scrolling finger-press task while recording |
+| `pixi run make-task-sequences` | Generate grasp and natural-task text blocks from a catalogue, split into sessions |
+| `pixi run prompter` | Run the scrolling finger-press task, or text-prompt blocks, while recording |
 | `pixi run check-timing` | Timing report for a recorded session |
 | `pixi run filter-emg` | Offline EMG filtering into `data/processed` (20 Hz high-pass + 60 Hz notches at every harmonic) |
 | `pixi run replay` | Replay a recorded trial: prompts, EMG viewer with prompt markers, camera (placeholder) |
@@ -288,6 +289,8 @@ Ready-made sets in `protocols/`:
   presses, pinches and squeezes (the thumb with each finger), at both levels (about 18 s each).
 - `test`: short 5-press blocks.
 - `sync`: quick presses for timing checks.
+- `demo_tasks`: three short text-prompt blocks for trying them with `--simulate` (see
+  [Grasp and natural-task blocks](#grasp-and-natural-task-blocks)).
 
 The recording protocols have one folder per session. Each folder is randomised separately,
 and all use `--reps 3`:
@@ -305,7 +308,7 @@ about 10 minutes later, then every 20 minutes (`--recalibrate 10 20`: minutes to
 block, then between later ones). A due block is put in front of the next task block, when a
 block finishes or when you press Shift after a pause; the screen says how long it has been.
 `--no-calibration` skips them all. The prompter shows the instructions, and each block is
-saved as a trial with `task_set: calibration`:
+saved as a trial with `task_set: calibration` (text blocks get their own, below):
 1. Rest quietly until the first capsule reaches the target, 4 s in (1 s to settle, then 3 s
    of rest; the capsule is on screen from the start).
 2. Give each digit one brief press (1.5 s) as hard as is comfortable ("max", the widest
@@ -324,8 +327,24 @@ it comes before:
 - **Single and multi blocks** get the press block above.
 - A session's first calibration matches its first task block, and a later one the block it is
   put in front of.
+- **Before text blocks** (grasp and natural tasks): a grasp calibration, saved with `task_set:
+  grasp_calibration`. Its start screen says what to set out (a hardcover book and a ball). It
+  runs like the other text blocks, paced by the operator: the screen previews each grasp,
+  highlighted on the hand, Space starts its 3 s countdown, and at Go the subject makes one
+  brief maximum grasp, which ends by itself after 1.5 s (a Space from 1 s after Go ends it
+  sooner). One of each kind: thumb-index, thumb-index-middle and all fingertips on the book,
+  then a power grasp on the ball (swap objects while it is previewed). After the last one,
+  Space finishes the block, and `r` redoes a grasp. A catalogue's `[calibration]` table
+  changes the hold time (`hold_s`), grasps and objects.
 
-`deftemg_acquisition.data.calibration` turns a block into:
+The two kinds keep separate schedules: the prompter puts a calibration before the session's
+first lane block and a grasp calibration before its first text block, and the 10 / 20 minute
+rule runs for each kind on its own (a press calibration never counts for text blocks, nor the
+reverse). A press calibration's clock starts when it starts; a grasp calibration's at its first
+Go, since it may wait at its first preview. `--no-calibration` skips both.
+
+`deftemg_acquisition.data.calibration` turns a press, pinch or squeeze block (not a grasp
+calibration) into:
 - **Rest noise level per channel:** how well each electrode is in contact this donning.
 - **Each digit's maximum:** the EMG amplitude (RMS per channel, rest noise removed) of the
   best effort it takes part in (its press; in a pinch block the thumb's is its strongest
@@ -387,7 +406,10 @@ Blocks run in the order given. Keys (the prompter window must have focus; click 
 | Key | Action |
 |---|---|
 | Shift (or `s`) | Start the current block. It ends by itself 1.5 s after the last prompt and the next block becomes current |
-| Enter (or `e`) | End the block early: saved, marked incomplete, block stays current to redo |
+| Space | Text blocks: start the prompt's countdown, mark its end; after the last one, finish the block |
+| `r` | Text blocks: redo the latest prompt (in a countdown: cancel it) |
+| `T` | Text blocks, between blocks: show the terms slide again (Shift, Space or Enter closes it) |
+| Enter (or `e`) | End the block early: saved, marked incomplete, block stays current to redo (a text block resumes) |
 | ← / → | Choose a block (between blocks) |
 | Esc (or `q`) | Quit |
 
@@ -395,6 +417,8 @@ Options:
 - `--hand left`.
 - `--lookahead`: seconds of prompts visible, default 6.
 - `--sync-patch`: see section 4.
+- `--condition NAME=VALUE`: a session condition for text blocks (below).
+- `--wuji`: also record a Wuji Glove with every trial.
 - The same subject / donning questions as `acquire` (`--subject`, `--redon` /
   `--same-donning`), `--session`, and the same filter and stream options.
 
@@ -432,6 +456,132 @@ pixi run prompter --effort-meter --effort-zones 0.2 0.4 0.65 0.85 protocols/sing
 
 It measures EMG, not force: it keeps EMG levels consistent from press to press. Feedback
 changes how people press, so also record some sessions without it.
+
+Text blocks have no effort meter (with only text blocks, `--effort-meter` is ignored, with a
+note), and a grasp calibration doesn't set its 100 %.
+
+### Grasp and natural-task blocks
+
+Text-prompt blocks show a written task instead of scrolling capsules: an object, how to
+approach it, a grasp and what to do ("Tuna can, from the top / Thumb-index grasp / **STAY ON
+TABLE** / Light grasp"), or an everyday task ("Loosen the wing nut all the way off"). The
+operator paces them: each prompt waits for Space.
+
+```bash
+pixi run make-task-sequences --summary            # check the catalogue, print the estimates
+pixi run make-task-sequences --out protocols/G01  # write a set (random seed, printed)
+pixi run prompter --subject S01 --wuji protocols/G01/S01    # one session, with the glove
+pixi run prompter --simulate --condition mug_fill=empty protocols/demo_tasks/S01  # no hardware
+```
+
+**The catalogue** (`protocols/grasp_natural/catalogue.toml`; TOML, comments in the file
+describe every key) holds:
+- **Grasp types** (the fingertips highlighted on the hand, or the whole hand), **variations**
+  (light grasp, grasp and squeeze, pick up and place, pick up and rotate slowly or quickly,
+  ...; each with an estimated time), **approaches** and session **conditions**.
+  - A condition's optional `label` is what the screens call it ("Rubber bottle: filled");
+    without one they show its id ("Conditions: bottle_fill_rubber = filled").
+  - A variation's `lead` is a line drawn in bold between the grasp line and its text: "STAY ON
+    TABLE" for the light grasp and the squeeze, "PICK UP" for the others.
+  - `first_approach_only = true` (the two rotate variations) keeps the variation, per grasp
+    type, only on the first of the object's approaches that offers that grasp type, so an
+    object is rotated once per grasp type.
+- **Objects:** each takes every grasp type and variation, with one unnamed approach, unless it
+  names its `approaches`, limits the grasps (`grasps`, `exclude_grasps`, per approach
+  `approach_grasps`), drops variations (`exclude_variations`) or adds notes (`note`,
+  `notes.<grasp>`). The shipped file has 19 objects and 590 combinations. For example, the
+  mugs take thumb-index and thumb-index-middle from the top, on the lip, and all fingertips
+  and power from the side, around the body; the hammer and the potato chip are not rotated.
+- **Natural tasks:** a text, or steps (loosen, then tighten) repeated for each variant
+  (`{variant}` in the text; a variant can reword a step). A variant's steps always run together
+  and in order. `group` decides which block a task joins, and `fixed_s` gives a task a fixed
+  duration (page turning). Each task must list in `items` what to set out for it, as the
+  subject sees it (the block's start screen lists them). The shipped file has 31 trials in 5 groups.
+  An optional `[natural_groups.<group>]` table gives the group's `task`, the line its start
+  screen shows after "Task:" ("insert, then remove each plug"); without one it is "do each
+  task as written".
+- **Terms** (`[[terms]]`, optional): each a term and what it means ("Pick up: lift the object
+  off the table"), shown to the subject before the first block, in this order.
+- **Grasp calibration** (`[calibration]`, optional): the hold time and the maxima, overriding
+  the defaults (see [Calibration block](#calibration-block)).
+
+To add an object or a task, add an `[[objects]]` or `[[natural]]` entry and make a new set;
+`--summary` checks the file (an error names the entry) and prints the counts. A block file
+holds its prompts' text, so editing the catalogue doesn't change a set already made. But after
+a change that adds, removes or re-times combinations, the same seed gives other blocks, so
+regenerate a set in use as a whole; never mix blocks of two sets.
+
+**Sets and sessions.** `make-task-sequences` puts every combination in a set once, shuffled.
+The seed is printed and saved in every block and in `plan.json`; `--seed` makes the same set again.
+- One grasp block per object (up to 32 prompts), and one natural block per group, with its
+  tasks shuffled (a task's steps stay together).
+- Blocks are placed whole into sessions `S01/`, `S02/`, ..., each estimated to fit the session
+  limit. Files are named `bNN_<object or group>.json` in run order. `plan.json` lists each
+  session's blocks, trial counts and estimate. `session_objects.txt` lists the objects each
+  session needs, the grasp calibration's (hardcover book and ball by default) included.
+- A block's estimate is the object swap plus, per prompt, countdown + task estimate + reset.
+  A session's room is the limit less setup and grasp calibrations. The catalogue's `[timing]`
+  sets these, and `--countdown-s`, `--reset-s`, `--object-swap-s`, `--session-setup-s`,
+  `--calibration-s` and `--session-limit-s` override it. Defaults: countdown 3 s, reset 5 s,
+  swap 45 s, setup 180 s, calibration 90 s, limit 30 min; variations 4, 6, 8 and 9 s, and
+  12 and 8 s for rotating slowly and quickly. With these the shipped catalogue's 590 grasp
+  prompts and 31 natural trials take about 4 h in 9 sessions. They are estimates: tune them
+  after a real session.
+- It refuses to write over a set already in `--out`, since a new seed gives other blocks.
+  `--force` replaces it and deletes only the files the old `plan.json` lists.
+
+**Running.** The prompter takes text blocks like lane blocks: a folder runs its blocks in name
+order (skipping `plan.json`), and lane and text blocks can be mixed. The screen shows the
+block, the prompt number and the session conditions, then the prompt's text (its `lead` line
+in bold) and the hand with the grasp highlighted (fingertips, or the whole hand for a power
+grasp).
+- **Terms:** when the window opens, a slide lists the catalogue's terms, each in bold before
+  what it means (a run of blocks without them skips it). Shift, Space or Enter closes it, without starting a block; `T`
+  between blocks shows it again.
+- **Start screen:** between blocks, one item per line (several objects listed under "Set
+  out:"): "Set out:" with the objects to put out, "Task:" with what to do (for a natural
+  block, its group's task line), the number of prompts and the estimated minutes (or where it
+  resumes), the session conditions ("Rubber bottle: filled"), and "Shift to start". The header
+  above names the block; "(already done)" comes first for a block done before. Block files
+  made before these screens show the block's name, the object to place and a paragraph of
+  instructions instead.
+
+1. Shift starts the block on a preview of the first prompt: "Rest. Next:", the prompt dimmed,
+   and "Space to start" (with "r: redo the last prompt" when the prompt before can be redone).
+2. Space starts a 3 s countdown, then "GO": the subject does the task and returns to rest.
+3. Space marks the end, and the next prompt is previewed. A fixed-duration task ends by
+   itself (Space ends it sooner). Space is ignored during a countdown, and for 1 s after Go and
+   after each end, so a double press can't end a task at once.
+4. After the last end: "Space to finish the block, r to redo the last one". Space (or Enter,
+   or Esc, which also quits) saves the block as complete 1.5 s later.
+
+- **Redo:** `r` voids the latest attempt, under way or just finished, and previews that prompt
+  again; in a countdown it cancels the countdown. It reaches only the latest attempt: after a
+  cancelled countdown the prompt before can no longer be redone, and once "tighten" has
+  started, its "loosen" can't (reset the fastener by hand). No key skips a prompt.
+- **Early end and resume:** Enter ends the block early (saved, incomplete, still current).
+  Shift then runs it again, in a new trial, from the first prompt that has no "ok" attempt
+  yet, and the screen says "Resumes at prompt k of N" and estimates only what is left. A pair ended
+  after "loosen" resumes at its "tighten". A block that completes starts at its first prompt
+  if redone. Resume state lives in the prompter: after a restart a block starts at prompt 1.
+- **Saving:** at the end of every block the window shows "Saving..." until the save returns;
+  keys pressed meanwhile are dropped. A glove recording (`--wuji`) with its point cloud takes
+  about 2 s per block minute to save.
+- **Conditions:** blocks name the session conditions they need (in the shipped catalogue,
+  whether each water bottle is filled), and the prompter asks for them in the terminal before
+  any session folder or device opens. `--condition NAME=VALUE` (repeatable) answers in advance;
+  without a terminal, each must be given. A value not among the choices stops the prompter. A
+  name no block in the session uses is ignored, with a note, so one command can name both
+  bottles for every session; the note says "did you mean" only for a likely typo. Values hold
+  for the whole session (to change one, start a new session), are shown between blocks, and
+  are saved in `session.json` and in the metadata of the blocks that use them.
+- **Markers** over LSL: `text|preview|i`, `text|countdown|i`, `text|go|i|<label>`, `text|end|i`
+  (lane blocks send `prompt|...`). `--sync-patch` flashes at each Go.
+- `--simulate` and `--replay` work as for lane blocks; their armband doesn't follow the prompts.
+
+**What is saved:** one trial per run of a block, with `task: text_prompter` and one row per
+attempt in the `text_*` arrays (see [Data layout](#data-layout)). A text block has no
+`prompt_*` arrays, so the press tools (`select_trials`, `data.calibration`) leave it out.
 
 ## 4. Timing checks
 
@@ -508,12 +658,18 @@ pixi run replay data/raw/<session>/trial_001_<label>.npz --speed 0.5 --window 10
 
 One timeline, played back together:
 - **Prompter:** as the subject saw it (prompter trials only), with the effort bar for blocks
-  recorded with `--effort-meter`.
+  recorded with `--effort-meter`. A text-prompt block is redrawn in text mode from its
+  recorded times, idle from its saved finish (`text_finish_host_ns`). Files from before the
+  finish was saved show "Space to finish the block" during the block's last 1.5 s of recording
+  (`tail_s`), where the live screen was idle.
 - **EMG view:** traces, spectrum and IMU exactly as in the live viewer.
   - Replay opens at the start of the trial and plays, with new data entering at the right
     edge (`--paused` opens it paused).
   - When a press starts, a line in the digit's colour marks it, labelled e.g. `index H` or
     `thumb+pinky L/H`, and scrolls left with the EMG.
+  - In a text-prompt block a line marks each Go, labelled with the object and grasp or step
+    (e.g. `tuna_can:TI`, `jar:open`), and `(redo)` or `(incomplete)` if the attempt didn't
+    count.
 - **Band RMS:** as in the live viewer, for the arm recorded with the session (or `--arm`).
 - **Camera panel:** empty until camera recording is added. To add it, implement `VideoSource`
   and return it from `find_video_sources` in `src/deftemg_acquisition/viz/replay.py`.
@@ -572,6 +728,11 @@ cal = session_calibration(session, emg_filter=EmgFilter())
     permute / shift`).
 - **Press timing** (`data.press_times`): EMG onset and offset of each prompted press, detected
   against the trial's rest noise.
+- **Text-prompt blocks** have no digit targets, so `select_trials` skips them ("text-prompt
+  block (no digit prompts)"). `scan_trial(path).is_text_block` finds them, and
+  `load_trial(path).text_prompts` holds the attempts (`TextPrompts`: the `text_*` arrays, plus
+  `resume_from` and `resumed_trial`); `trial.prompts` is None. `TextBlock.from_dict(
+  trial.info.metadata["sequence"])` gives the block's prompts.
 - **Synthetic sessions** (`data.synthetic`, `make-synthetic`) are written in the recorded
   format, with known press timing and strength, for testing analysis code.
 
@@ -581,11 +742,16 @@ Other packages can add to the tools without copying them, e.g. to show a model's
 
 - `tasks.prompter.PrompterOverlay`: draws in the prompter's lanes, under or over the prompts
   (`PrompterWidget.overlays`). `PrompterWidget.on_paint` is called after each frame is
-  painted.
+  painted. Text blocks have no lanes: only overlays with `text_mode = True` are drawn on them
+  (`widget.text_view` is the block's current state); the others are skipped there.
 - `tasks.app.TaskPlugin`: hooks in the task window (`TaskWindow(plugins=...)`): text between
   blocks, metadata and arrays saved with each block, a call each frame tick, when a block ends
   and when the window closes. A plugin can't stop a recording: a hook that raises is logged
-  and skipped.
+  and skipped. Hooks get either kind of block, a lane `Sequence` or a `TextBlock`
+  (`tasks.textblock`); a plugin's arrays are saved beside the block's own (`prompt_*` or
+  `text_*`), so don't use those names.
+- New grasp objects and natural tasks need no code: see
+  [the catalogue](#grasp-and-natural-task-blocks).
 - `viz.viewer.ViewerPanel` and `viz.replay.ReplayPanel`: more panels in the live viewer (under
   the band RMS) and in replay (under the EMG traces, with a caption under the prompter and a
   status in the transport bar). `parser()` and `run()` let a command add its own options.
@@ -614,8 +780,8 @@ Each session is a folder `data/raw/<YYYYMMDD-HHMMSS>/` (git-ignored):
 
 | File | Contents |
 |---|---|
-| `session.json` | Port, confirmed filter settings, streaming mode, subject, donning (id, start, session within it, previous session), hand |
-| `trials.jsonl` | One line per trial: label, times, packet counts, drops, file paths, metadata (for prompter trials: the full sequence, task set, hand, completed flag) |
+| `session.json` | Port, confirmed filter settings, streaming mode, subject, donning (id, start, session within it, previous session), hand, session conditions |
+| `trials.jsonl` | One line per trial: label, times, packet counts, drops, file paths, metadata (for prompter trials: `task`, the full sequence, task set, hand, completed flag; text blocks also below) |
 | `trial_NNN_<label>.bin` | Exact bytes received from the armband (lossless backup) |
 | `trial_NNN_<label>.npz` | Decoded data (below) |
 | `trial_NNN_<label>_timing.npz`, `timing.json` | Written by `check-timing` |
@@ -642,6 +808,30 @@ Key arrays in the trial `.npz`:
   - `prompt_digits` (n, 5) and `prompt_level` (n, 5; −1 = digit not pressed), coded by
     `digit_names` / `level_names` (0 = low, 1 = high).
   - `scroll_start_host_ns`.
+- **Text prompts** (text-prompt blocks, `task: text_prompter`; lane blocks are
+  `scroll_prompter`). One row per attempt (a redo adds a row); −1 = did not happen:
+  - `text_prompt_index`: the prompt, an index into the block's `prompts` (the `sequence`
+    metadata), also in a resumed run.
+  - `text_preview_host_ns`, `text_countdown_host_ns`, `text_go_host_ns`, `text_end_host_ns`:
+    when its preview, countdown, Go (scheduled) and end came. `text_go_paint_ns`: the first
+    frame drawn showing Go.
+  - `text_end_reason` (`operator`, `timer`, `block_end`), `text_status` (`ok`, `redo`,
+    `cancelled`, `incomplete`).
+  - The prompt's fields: `text_object`, `text_grasp`, `text_approach`, `text_variation`,
+    `text_step`, `text_text` ("" = none; the whole prompt, its bold `lead` line included, whose
+    index is the prompt's `bold_line` in the `sequence` metadata).
+  - Scalars `block_start_host_ns` and `text_finish_host_ns`: when the block finished (Space or
+    Enter after its last end, or an early end; −1 = not finished, or a file from before it was
+    saved).
+  - No `prompt_*` arrays, `scroll_start_host_ns` or effort trace. The grasp calibration saves
+    the same arrays. Calibrations recorded before it became operator-started are `timed`: their
+    times follow its schedule, and they replay but no longer run.
+  - Metadata: `task_set` (`grasp`, `natural`, `grasp_calibration`), `mode` (`self_paced`;
+    `timed` in those old calibrations), `conditions`, `countdown_s`, `go_debounce_s`.
+    `completed` means the block finished in this trial. `text_resume_from` is the prompt the
+    trial started at (0 for a fresh run). Above 0, the earlier prompts are in the trial(s) chained by
+    `text_resumed_trial`: the file name (without `.npz`) of the run just before. Resume
+    state isn't saved, so after a prompter restart a block starts again at prompt 1.
 
 **Clocks.**
 - Every timestamp taken on the computer (`*_host_*`, `*_paint_ns`, `host_start_ns`, …) uses
@@ -698,15 +888,19 @@ sample was taken.
 - `src/deftemg_acquisition/viz/`: live viewer, replay, the plot panels they share, and window
   placement.
 - `src/deftemg_acquisition/tasks/`: prompt sequences, prompter drawing, task window, effort
-  meter.
+  meter; text-prompt blocks (`catalogue`, `textblock`, the set generator `textgen`, the
+  self-paced runner `selfpaced`).
 - `src/deftemg_acquisition/analysis/`: timing analysis, EMG filtering.
 - `src/deftemg_acquisition/data/`: trial loading, labels, press timing, calibration,
   synthetic sessions.
 - `src/deftemg_acquisition/cli/`: command-line entry points (`acquire`, `prompter`,
-  `make_sequences`, `check_timing`, `filter_emg`, `make_synthetic`, `serve`), and the terminal
-  key input `acquire` reads.
-- `protocols/`: prompt sequence files.
+  `make_sequences`, `make_task_sequences`, `check_timing`, `filter_emg`, `make_synthetic`,
+  `serve`), and the terminal key input `acquire` reads.
+- `protocols/`: prompt sequence files; `grasp_natural/catalogue.toml`, the grasp and
+  natural-task catalogue; `demo_tasks/`, a tiny catalogue and the three text blocks made from it.
 - `examples/`: a synthetic example session.
+- `scripts/`: `glove_memory_check.py`, a glove recorder check of peak memory over one long
+  trial and of the time to save it, with a stand-in glove SDK.
 - `tests/`: pytest tests (no hardware needed).
 - `data/raw`, `data/processed`, `data/synthetic`: local data (git-ignored).
 

@@ -131,6 +131,10 @@ class Sequence:
         return cls.from_dict(json.loads(Path(path).read_text()))
 
     @property
+    def is_calibration(self) -> bool:
+        return self.task_set == CALIBRATION
+
+    @property
     def calibration_task(self) -> str | None:
         """For a calibration block, what it asks for (``CALIBRATION_TASKS``; "press" for
         blocks recorded before pinch and squeeze calibrations); None for a task block."""

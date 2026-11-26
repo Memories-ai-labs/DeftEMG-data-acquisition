@@ -1,0 +1,114 @@
+# A tiny catalogue for trying text-prompt blocks with --simulate (see the README, "Grasp and
+# natural-task blocks"). Same format as protocols/grasp_natural/catalogue.toml, which documents
+# every key. The blocks in S01/ were made from it with
+#   pixi run make-task-sequences --catalogue protocols/demo_tasks/catalogue.toml \
+#       --out protocols/demo_tasks --seed 1 --force
+
+[catalogue]
+name = "demo_tasks"
+
+[grasps.TI]
+name = "thumb-index"
+tips = ["thumb", "index"]
+
+[grasps.Power]
+name = "power"
+whole_hand = true
+
+[[variations]]
+id = "light"
+text = "Light grasp"
+lead = "STAY ON TABLE"
+est_s = 4
+
+[[variations]]
+id = "squeeze"
+text = "Grasp and squeeze"
+lead = "STAY ON TABLE"
+est_s = 6
+
+[[variations]]
+id = "pnp"
+text = "Pick up and place about 30 cm away"
+lead = "PICK UP"
+est_s = 8
+
+[[variations]]
+id = "rotate_slow"
+text = "Pick up, rotate slowly in all directions in the air, put it back"
+lead = "PICK UP"
+first_approach_only = true
+est_s = 12
+
+[[terms]]
+term = "Light grasp"
+text = "touch the object lightly"
+
+[[terms]]
+term = "Grasp and squeeze"
+text = "touch the object and squeeze at a sub-maximum force"
+
+[[terms]]
+term = "Stay on table"
+text = "the object stays on the table the whole time"
+
+[[terms]]
+term = "Pick up"
+text = "lift the object off the table"
+
+[[terms]]
+term = "Rotate"
+text = "turn the object in all directions in the air, slowly or quickly, then put it back"
+
+[[terms]]
+term = "Brief maximum"
+text = "grasp as hard as is comfortable, for the prompt duration"
+
+[[terms]]
+term = "Highlighted fingertips"
+text = "use only the fingertips lit on the hand (the whole hand if all of it is lit)"
+
+[approaches]
+side = "from the side"
+top = "from the top"
+
+[conditions.mug_fill]
+ask = "Mug: filled or empty?"
+choices = ["filled", "empty"]
+label = "Mug"
+
+[[objects]]
+id = "tennis_ball"
+name = "Tennis ball"
+
+[[objects]]
+id = "mug"
+name = "Coffee mug"
+approaches = ["top", "side"]
+approach_grasps.top = ["TI"]
+approach_grasps.side = ["Power"]
+exclude_variations = ["squeeze", "rotate_slow"]
+notes.TI = "on the lip"
+notes.Power = "around the body"
+condition = "mug_fill"
+
+[[natural]]
+id = "jar"
+group = "jar_and_pages"
+items = ["Jar"]
+est_s = 8
+
+[[natural.steps]]
+id = "open"
+text = "Open the turn-lid of the jar"
+
+[[natural.steps]]
+id = "close"
+text = "Close the turn-lid of the jar"
+
+[[natural]]
+id = "pages"
+group = "jar_and_pages"
+items = ["Book"]
+text = "Open the book, then turn pages until the time is up"
+fixed_s = 10

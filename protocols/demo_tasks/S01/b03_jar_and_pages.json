@@ -1,0 +1,109 @@
+{
+  "kind": "text_block",
+  "name": "S01_b03_jar_and_pages",
+  "task": "text_prompter",
+  "task_set": "natural",
+  "mode": "self_paced",
+  "params": {
+    "seed": 1,
+    "catalogue": "demo_tasks",
+    "catalogue_sha256": "306a16630a4968e3110f194ef5091b9cb1570a2d6d752f42739b92011611fca2",
+    "timing": {
+      "countdown_s": 3.0,
+      "reset_s": 5.0,
+      "object_swap_s": 45.0,
+      "session_setup_s": 180.0,
+      "calibration_s": 90.0,
+      "session_limit_s": 1800.0,
+      "recalibrate_s": [
+        600.0,
+        1200.0
+      ]
+    },
+    "terms": [
+      {
+        "term": "Light grasp",
+        "text": "touch the object lightly"
+      },
+      {
+        "term": "Grasp and squeeze",
+        "text": "touch the object and squeeze at a sub-maximum force"
+      },
+      {
+        "term": "Stay on table",
+        "text": "the object stays on the table the whole time"
+      },
+      {
+        "term": "Pick up",
+        "text": "lift the object off the table"
+      },
+      {
+        "term": "Rotate",
+        "text": "turn the object in all directions in the air, slowly or quickly, then put it back"
+      },
+      {
+        "term": "Brief maximum",
+        "text": "grasp as hard as is comfortable, for the prompt duration"
+      },
+      {
+        "term": "Highlighted fingertips",
+        "text": "use only the fingertips lit on the hand (the whole hand if all of it is lit)"
+      }
+    ],
+    "group": "jar_and_pages",
+    "conditions": [],
+    "start": {
+      "set_out": [
+        "Jar",
+        "Book"
+      ],
+      "task": "do each task as written"
+    },
+    "session": "S01",
+    "plan_est_s": 95.0
+  },
+  "prompts": [
+    {
+      "text": "Open the turn-lid of the jar",
+      "object": "jar",
+      "grasp": null,
+      "approach": null,
+      "variation": null,
+      "step": "open",
+      "group": "jar_and_pages",
+      "highlight": [],
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 8.0,
+      "bold_line": null
+    },
+    {
+      "text": "Close the turn-lid of the jar",
+      "object": "jar",
+      "grasp": null,
+      "approach": null,
+      "variation": null,
+      "step": "close",
+      "group": "jar_and_pages",
+      "highlight": [],
+      "duration_s": null,
+      "onset_s": null,
+      "est_s": 8.0,
+      "bold_line": null
+    },
+    {
+      "text": "Open the book, then turn pages until the time is up",
+      "object": "pages",
+      "grasp": null,
+      "approach": null,
+      "variation": null,
+      "step": null,
+      "group": "jar_and_pages",
+      "highlight": [],
+      "duration_s": 10.0,
+      "onset_s": null,
+      "est_s": 10.0,
+      "bold_line": null
+    }
+  ]
+}
